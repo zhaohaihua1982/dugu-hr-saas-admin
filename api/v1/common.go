@@ -4,6 +4,7 @@ package v1
 
 import (
 	"errors"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -50,7 +51,7 @@ func respondAuthError(ctx *gin.Context, err error) {
 	data := map[string]interface{}{}
 	var le *authn.ErrLocked
 	if errors.As(err, &le) {
-		data["remaining_seconds"] = int64(le.Remaining / 1e9)
+		data["remaining_seconds"] = int64(le.Remaining / time.Second)
 	}
 	if status == code.ErrorCaptchaRequired {
 		data["captcha_required"] = true
@@ -58,5 +59,5 @@ func respondAuthError(ctx *gin.Context, err error) {
 	if len(data) == 0 {
 		data = nil
 	}
-	ctx.AbortWithStatusJSON(200, ctl.Response{Status: status, Msg: code.GetMsg(status), Data: data})
+	ctx.AbortWithStatusJSON(200, ctl.Response{Status: status, Msg: ctl.MsgOf(ctx, status), Data: data})
 }

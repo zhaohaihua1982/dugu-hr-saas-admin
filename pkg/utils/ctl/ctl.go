@@ -1,4 +1,5 @@
-// Package ctl 统一响应封装（gin-mall 风格）。
+// Package ctl 统一响应封装。msg 按请求语言（?lang= / Accept-Language）生成，
+// 未协商到时回退配置默认语言（pkg/i18n）。
 package ctl
 
 import (
@@ -7,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"dugu-hr-saas-admin/pkg/code"
+	"dugu-hr-saas-admin/pkg/i18n"
 	"dugu-hr-saas-admin/pkg/utils/log"
 )
 
@@ -17,14 +19,29 @@ type Response struct {
 	Data   interface{} `json:"data"`
 }
 
-// RespSuccess 成功返回。传 data 为 nil 时填 "ok"。
+// lang 请求语言优先级：?lang= > Accept-Language > 配置默认（pkg/i18n.Default）。
+func lang(ctx *gin.Context) i18n.Lang {
+	if v := ctx.Query("lang"); v != "" {
+		if l, ok := i18n.ParseLang(v); ok {
+			return l
+		}
+	}
+	return i18n.FromAccept(ctx.GetHeader("Accept-Language"))
+}
+
+// MsgOf 按请求语言取业务码文案（供 middleware 等不直接持 i18n 的场景复用）。
+func MsgOf(ctx *gin.Context, bizCode int) string {
+	return i18n.Msg(lang(ctx), bizCode)
+}
+
+// RespSuccess 成功返回。data 为 nil 时填 "ok"。
 func RespSuccess(ctx *gin.Context, data interface{}) {
 	if data == nil {
 		data = "ok"
 	}
 	ctx.JSON(http.StatusOK, Response{
 		Status: code.SUCCESS,
-		Msg:    code.GetMsg(code.SUCCESS),
+		Msg:    i18n.Msg(lang(ctx), code.SUCCESS),
 		Data:   data,
 	})
 }
@@ -37,7 +54,7 @@ func RespError(ctx *gin.Context, err error, status int, data interface{}) {
 	}
 	ctx.JSON(http.StatusOK, Response{
 		Status: status,
-		Msg:    code.GetMsg(status),
+		Msg:    i18n.Msg(lang(ctx), status),
 		Data:   data,
 	})
 }

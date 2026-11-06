@@ -26,10 +26,11 @@ func Cors() gin.HandlerFunc {
 }
 
 // authAbort 鉴权失败标准响应（登录态失效，业务码 30001）。
+// 文案按请求语言协商（?lang=/Accept-Language，pkg/utils/ctl）。
 func authAbort(c *gin.Context) {
 	c.AbortWithStatusJSON(http.StatusOK, ctl.Response{
 		Status: code.ErrorAuthCheckTokenFail,
-		Msg:    code.GetMsg(code.ErrorAuthCheckTokenFail),
+		Msg:    ctl.MsgOf(c, code.ErrorAuthCheckTokenFail),
 		Data:   nil,
 	})
 }

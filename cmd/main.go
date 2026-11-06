@@ -31,6 +31,7 @@ import (
 	idpkg "dugu-hr-saas-admin/infrastructure/id"
 	"dugu-hr-saas-admin/infrastructure/token"
 	"dugu-hr-saas-admin/middleware"
+	"dugu-hr-saas-admin/pkg/i18n"
 	"dugu-hr-saas-admin/routes"
 )
 
@@ -98,6 +99,15 @@ func run() error {
 func assemble(ctx context.Context) (*assembled, error) {
 	conf.InitConfig()
 	debug := debugMode()
+
+	// 应用默认语言（yaml 显式配置优先于 SAAS_LANG 环境变量）
+	if c := conf.Config.I18n; c != nil && strings.TrimSpace(c.DefaultLang) != "" {
+		if l, ok := i18n.ParseLang(strings.TrimSpace(c.DefaultLang)); ok {
+			i18n.SetDefaultLang(l)
+		} else {
+			log.Printf("i18n.defaultLang=%q 未注册，回退默认语言链", c.DefaultLang)
+		}
+	}
 
 	// 生产环境禁止以内置默认密钥起跑（docs：密钥必须 SAAS_* 注入）
 	if conf.IsPro() && strings.HasPrefix(conf.Config.EncryptSecret.JwtSecret, "dev-only") {

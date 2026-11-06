@@ -7,6 +7,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"dugu-hr-saas-admin/application"
+	"dugu-hr-saas-admin/pkg/code"
+	"dugu-hr-saas-admin/pkg/i18n"
 	"dugu-hr-saas-admin/pkg/utils/ctl"
 )
 
@@ -37,8 +39,19 @@ func (p *AuthAPI) SendSms(ctx *gin.Context) {
 		ErrorResponse(ctx, err)
 		return
 	}
-	// 防枚举：无论手机号是否注册，成功口径一致（docs §5）
-	ctl.RespSuccess(ctx, "已发送")
+	// 防枚举：无论手机号是否注册，成功口径一致（docs §5）；
+	// 提示文案按请求语言（i18n.KeySmsSent）。
+	l := i18n.FromAccept(ctx.GetHeader("Accept-Language"))
+	if v := ctx.Query("lang"); v != "" {
+		if parsed, ok := i18n.ParseLang(v); ok {
+			l = parsed
+		}
+	}
+	ctx.JSON(200, ctl.Response{
+		Status: code.SUCCESS,
+		Msg:    i18n.Msg(l, code.SUCCESS),
+		Data:   i18n.Get(l, i18n.KeySmsSent),
+	})
 }
 
 // LoginPassword POST /auth/login/password。

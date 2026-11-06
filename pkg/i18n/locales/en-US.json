@@ -1,0 +1,29 @@
+{
+  "200": "Operation successful",
+  "201": "Operation successful",
+  "400": "Invalid parameters",
+  "500": "Internal error, please try again later",
+
+  "30001": "Session expired, please sign in again",
+  "30002": "Please sign in first",
+  "30010": "Incorrect account or password",
+  "30011": "Incorrect account or password",
+  "30012": "Incorrect account or password",
+  "30013": "Captcha is incorrect or expired, please retry",
+  "30014": "Please complete the captcha first",
+  "30015": "Verification code is incorrect",
+  "30016": "Verification code expired, please request a new one",
+  "30017": "Too many requests, please try again later",
+  "30018": "Failed to send SMS, please try again later",
+
+  "30021": "Account already exists",
+  "30022": "Mobile number is already bound to another account",
+  "30023": "Account not found",
+  "30024": "Password must be at least 10 characters with 2 character classes",
+  "30025": "Invalid account or mobile number format",
+  "30026": "Built-in super admin account is protected, operation denied",
+
+  "40001": "Database error, please retry",
+
+  "sms.sent": "Sent"
+}

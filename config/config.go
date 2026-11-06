@@ -20,6 +20,13 @@ type Conf struct {
 	Redis          *Redis            `yaml:"redis"`
 	EncryptSecret  *EncryptSecret    `yaml:"encryptSecret"`
 	BootstrapAdmin *BootstrapAdmin   `yaml:"bootstrapAdmin"`
+	I18n           *I18n             `yaml:"i18n"`
+}
+
+// I18n 多语言配置：defaultLang 必须命中 pkg/i18n 已注册语言，
+// 未设置或未注册时回退 zh-CN（也可由 SAAS_LANG 环境变量覆盖）。
+type I18n struct {
+	DefaultLang string `yaml:"defaultLang"`
 }
 
 type System struct {
