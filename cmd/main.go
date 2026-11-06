@@ -30,7 +30,6 @@ import (
 	"dugu-hr-saas-admin/infrastructure/db/dao"
 	idpkg "dugu-hr-saas-admin/infrastructure/id"
 	"dugu-hr-saas-admin/infrastructure/token"
-	"dugu-hr-saas-admin/middleware"
 	"dugu-hr-saas-admin/pkg/i18n"
 	"dugu-hr-saas-admin/routes"
 )
@@ -169,7 +168,7 @@ func assemble(ctx context.Context) (*assembled, error) {
 	}
 
 	// ---------- interfaces ----------
-	router := routes.NewRouter(svc, middleware.JwtAuth(tokens, sessions))
+	router := routes.NewRouter(svc, tokens, sessions)
 
 	return &assembled{router: router, releaseHost: func() error {
 		var errs []error
