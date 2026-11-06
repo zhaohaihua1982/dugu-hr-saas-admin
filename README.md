@@ -75,6 +75,11 @@ GET    /api/v1/admin/login-logs             登录日志
 GET    /healthz                             存活探针
 ```
 
+鉴权策略：`middleware.AuthGuard` **全局统一过滤**——白名单外的所有请求必须携带
+有效会话（安全默认 deny，新增接口不配置即被拦）。白名单显式列举未登录接口：
+`/healthz`、`auth/captcha`、`auth/sms/send`、`auth/login/*`；
+`logout/me` 及全部管理面接口仍需登录（见 `routes.PublicPaths`）。
+
 ## DDD 关键约定
 
 - **domain 零依赖**：聚合/端口无 gin、gorm、redis、config 依赖；领域不读全局时钟，
