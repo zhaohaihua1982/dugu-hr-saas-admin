@@ -15,8 +15,8 @@ import (
 
 var _client *redis.Client
 
-// InitCache 建立 redis 客户端并探活。
-func InitCache() {
+// InitCache 建立 redis 客户端并探活。出错返回 error，不再内部 panic。
+func InitCache() error {
 	cfg := conf.Config.Redis
 	addr := cfg.RedisHost + ":" + cfg.RedisPort
 	_client = redis.NewClient(&redis.Options{
@@ -33,8 +33,21 @@ func InitCache() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := _client.Ping(ctx).Err(); err != nil {
-		panic(fmt.Errorf("连接 redis 失败(%s): %w", addr, err))
+		_ = _client.Close()
+		_client = nil
+		return fmt.Errorf("连接 redis 失败(%s): %w", addr, err)
 	}
+	return nil
+}
+
+// Close 释放 redis 连接（优雅退出时调用）。
+func Close() error {
+	if _client == nil {
+		return nil
+	}
+	err := _client.Close()
+	_client = nil
+	return err
 }
 
 // Client 获取共享客户端（service/middleware 使用）。

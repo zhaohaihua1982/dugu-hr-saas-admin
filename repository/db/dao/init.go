@@ -20,7 +20,8 @@ import (
 var _db *gorm.DB
 
 // InitMySQL 建立连接池、执行迁移并 seed 初始超管。
-func InitMySQL() {
+// 出错返回 error 由启动方决定退出方式（参考 go-demo：不再内部 panic）。
+func InitMySQL() error {
 	mConfig := conf.Config.MySql["default"]
 
 	var ormLogger logger.Interface
@@ -54,7 +55,7 @@ func InitMySQL() {
 		},
 	})
 	if err != nil {
-		panic(fmt.Errorf("连接 mysql 失败: %w", err))
+		return fmt.Errorf("连接 mysql 失败: %w", err)
 	}
 
 	sqlDB, _ := db.DB()
@@ -65,11 +66,24 @@ func InitMySQL() {
 	_db = db.Set("gorm:table_options", "charset=utf8mb4")
 
 	if err := migrate(); err != nil {
-		panic(fmt.Errorf("数据库迁移失败: %w", err))
+		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
 	if err := seedSuperAdmin(); err != nil {
-		panic(fmt.Errorf("初始超管账号 seed 失败: %w", err))
+		return fmt.Errorf("初始超管账号 seed 失败: %w", err)
 	}
+	return nil
+}
+
+// Close 释放 MySQL 连接池（优雅退出时调用）。
+func Close() error {
+	if _db == nil {
+		return nil
+	}
+	sqlDB, err := _db.DB()
+	if err != nil {
+		return fmt.Errorf("获取 mysql 连接池失败: %w", err)
+	}
+	return sqlDB.Close()
 }
 
 // NewDBClient 获得 ctx 绑定的会话连接（超时/取消随请求传播）。
