@@ -1,0 +1,38 @@
+system:
+  # appEnv: dev/debug/local/prod——prod 下禁止内置默认密钥启动
+  appEnv: "dev"
+  httpPort: ":8080"
+
+# 业务库：SaaS 管理后台
+mysql:
+  default:
+    dialect: "mysql"
+    dbHost: "127.0.0.1"
+    dbPort: "3306"
+    dbName: "dugu-hr-saas-admin"
+    userName: "root"
+    password: "zhh2026"
+    charset: "utf8mb4"
+
+redis:
+  redisDbName: 4
+  redisHost: 127.0.0.1
+  redisPort: 6379
+  redisNetwork: "tcp"
+  redisPwd: ""
+
+# 密钥：生产环境必须用环境变量覆盖
+#   SAAS_JWT_SECRET / SAAS_MOBILE_HMAC / SAAS_MOBILE_AES（mobileAes 为 64 位 hex = 32 字节）
+encryptSecret:
+  jwtSecret: "dev-only-jwt-secret-please-override"
+  mobileHmac: "dev-only-mobile-hmac-key"
+  mobileAes: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+
+# 初始超管账号（首次启动且 sys_user 表为空时 seed）
+# SAAS_BOOTSTRAP_ADMIN_PASSWORD / SAAS_BOOTSTRAP_ADMIN_MOBILE 可覆盖
+# username 由代码固定为 admin（见 consts.SuperAdminUsername）
+bootstrapAdmin:
+  name: "平台超管"
+  password: "HrSaas@2026#Admin"
+  mobile: "13800000000"
+  email: ""
