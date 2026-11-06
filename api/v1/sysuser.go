@@ -7,13 +7,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"dugu-hr-saas-admin/application"
+	apploginlog "dugu-hr-saas-admin/application/loginlog"
+	appsysuser "dugu-hr-saas-admin/application/sysuser"
 	"dugu-hr-saas-admin/pkg/utils/ctl"
 )
 
 // CreateSysUser POST /admin/sys-users。
 func (p *SysUserAPI) Create(ctx *gin.Context) {
-	var req application.CreateSysUserReq
+	var req appsysuser.CreateSysUserReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return
@@ -28,7 +29,7 @@ func (p *SysUserAPI) Create(ctx *gin.Context) {
 
 // List GET /admin/sys-users。
 func (p *SysUserAPI) List(ctx *gin.Context) {
-	var req application.SysUserListReq
+	var req appsysuser.SysUserListReq
 	if err := ctx.ShouldBindQuery(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return
@@ -48,7 +49,7 @@ func (p *SysUserAPI) Update(ctx *gin.Context) {
 		ErrorResponse(ctx, err)
 		return
 	}
-	var req application.UpdateSysUserReq
+	var req appsysuser.UpdateSysUserReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return
@@ -96,7 +97,7 @@ func (p *SysUserAPI) ResetPassword(ctx *gin.Context) {
 		ErrorResponse(ctx, err)
 		return
 	}
-	var req application.ResetPasswordReq
+	var req appsysuser.ResetPasswordReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return
@@ -110,7 +111,7 @@ func (p *SysUserAPI) ResetPassword(ctx *gin.Context) {
 
 // ListLogs GET /admin/login-logs。
 func (p *LoginLogAPI) ListLogs(ctx *gin.Context) {
-	var req application.ListLoginLogsReq
+	var req apploginlog.ListLoginLogsReq
 	if err := ctx.ShouldBindQuery(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return

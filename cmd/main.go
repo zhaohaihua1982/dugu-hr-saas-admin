@@ -20,6 +20,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"dugu-hr-saas-admin/application"
+	appauth "dugu-hr-saas-admin/application/auth"
+	apploginlog "dugu-hr-saas-admin/application/loginlog"
+	appsysuser "dugu-hr-saas-admin/application/sysuser"
 	conf "dugu-hr-saas-admin/config"
 	"dugu-hr-saas-admin/domain/authn"
 	"dugu-hr-saas-admin/domain/sysuser"
@@ -161,10 +164,10 @@ func assemble(ctx context.Context) (*assembled, error) {
 
 	// ---------- application ----------
 	svc := &application.Services{
-		Auth: application.NewAuthService(users, logsRepo, tokens, sessions, captchaSvc,
+		Auth: appauth.NewService(users, logsRepo, tokens, sessions, captchaSvc,
 			guard, lock, codes, smsSenderStub{}, mobileCrypto, hasher, ids),
-		Users: application.NewSysUserService(users, sessions, codes, lock, mobileCrypto, hasher, ids),
-		Logs:  application.NewLoginLogService(logsRepo),
+		Users: appsysuser.NewService(users, sessions, lock, mobileCrypto, hasher, ids),
+		Logs:  apploginlog.NewService(logsRepo),
 	}
 
 	// ---------- interfaces ----------

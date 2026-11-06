@@ -1,5 +1,6 @@
-// 账号管理用例（docs §9“账号管理”段、§8.3 超管保护）。
-package application
+// Package sysuser —— 账号管理用例（docs §9“账号管理”段、§8.3 超管保护）。
+// 标准DDD：依赖只有 domain（端口+聚合）；DTO 在本包，与用例同域同包。
+package sysuser
 
 import (
 	"context"
@@ -7,54 +8,128 @@ import (
 	"log/slog"
 	"time"
 
-	"dugu-hr-saas-admin/domain/authn"
+	"dugu-hr-saas-admin/application/types"
+	authn "dugu-hr-saas-admin/domain/authn"
 	"dugu-hr-saas-admin/domain/sysuser"
 	"dugu-hr-saas-admin/pkg/utils/log"
 )
 
-// SysUserService 账号管理用例容器。
-type SysUserService struct {
+// ---------- 用例输出/输入对象（接口层直接绑定） ----------
+
+// UserView 对外展示视图（手机只用 mask，永不解密——docs §3.3①）。
+type UserView struct {
+	ID        int64  `json:"id"`
+	Username  string `json:"username"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	Mobile    string `json:"mobile"`
+	Status    int    `json:"status"`
+	CreatedAt string `json:"created_at"`
+}
+
+// toView 聚合 → 展示视图（包内私有；auth 域经 ToView 复用）。
+func toView(u *sysuser.User) UserView {
+	v := UserView{
+		ID:       u.ID,
+		Username: u.Username,
+		Name:     u.Name,
+		Email:    u.Email,
+		Mobile:   u.Mobile.Mask,
+		Status:   int(u.Status),
+	}
+	if !u.CreatedAt.IsZero() {
+		v.CreatedAt = u.CreatedAt.Format(time.DateTime)
+	}
+	return v
+}
+
+// ToView 导出视图转换（认证域登录响应/Me 复用，避免同层重复定义）。
+func ToView(u *sysuser.User) UserView { return toView(u) }
+
+// CreateSysUserReq 创建管理账号（username 禁 11 位纯数字；密码须 ≥10 位含两类字符）。
+type CreateSysUserReq struct {
+	Username string `json:"username" binding:"required,max=64"`
+	Name     string `json:"name" binding:"required,max=64"`
+	Password string `json:"password" binding:"required,max=64"`
+	Mobile   string `json:"mobile" binding:"required"`
+	Email    string `json:"email" binding:"omitempty,email,max=128"`
+}
+
+// UpdateSysUserReq 修改账号（username 不可改；status 仅 1/2；mobile 传入即换绑）。
+type UpdateSysUserReq struct {
+	Name   string          `json:"name" binding:"omitempty,max=64"`
+	Email  string          `json:"email" binding:"omitempty,email,max=128"`
+	Mobile string          `json:"mobile" binding:"omitempty"`
+	Status *sysuser.Status `json:"status" binding:"omitempty,oneof=1 2"`
+}
+
+// SysUserListReq 账号列表。
+type SysUserListReq struct {
+	Page     int             `form:"page" binding:"omitempty,min=1"`
+	PageSize int             `form:"page_size" binding:"omitempty,min=1,max=100"`
+	Keyword  string          `form:"keyword"`
+	Status   *sysuser.Status `form:"status" binding:"omitempty,oneof=1 2 3"`
+}
+
+// SysUserListResp 账号列表响应。
+type SysUserListResp struct {
+	Items    []UserView `json:"items"`
+	Total    int64      `json:"total"`
+	Page     int        `json:"page"`
+	PageSize int        `json:"page_size"`
+}
+
+// ResetPasswordReq 重置密码（docs §9：强审计）。
+type ResetPasswordReq struct {
+	Password string `json:"password" binding:"required,max=64"`
+}
+
+// ---------- 业务哨兵 ----------
+
+// ErrSuperAdminProtected 超管账号受保护（docs §8.3，映射 code.ErrorSuperAdminProtected）。
+var ErrSuperAdminProtected = fmt.Errorf("super admin protected")
+
+// ---------- 用例 ----------
+
+// Service 账号管理用例。
+type Service struct {
 	users    sysuser.Repository
 	sessions authn.SessionStore
-	codes    authn.SmsCodeStore
 	lock     authn.LockGuard
 	mobile   sysuser.MobileCrypto
 	hasher   sysuser.PasswordHasher
 	ids      authn.IDGenerator
 }
 
-// NewSysUserService 构造。
-func NewSysUserService(
+// NewService 构造（认证域 DTOstatus 与本域无耦合，登录会话仅通过 SessionStore 端口协作）。
+func NewService(
 	users sysuser.Repository,
 	sessions authn.SessionStore,
-	codes authn.SmsCodeStore,
 	lock authn.LockGuard,
 	mobile sysuser.MobileCrypto,
 	hasher sysuser.PasswordHasher,
 	ids authn.IDGenerator,
-) *SysUserService {
-	return &SysUserService{
-		users: users, sessions: sessions, codes: codes, lock: lock,
-		mobile: mobile, hasher: hasher, ids: ids,
-	}
+) *Service {
+	return &Service{users: users, sessions: sessions, lock: lock, mobile: mobile, hasher: hasher, ids: ids}
 }
 
-// List 账号列表（手机只回 mask，永不解密——docs §3.3①“展示走脱敏”）。
-func (s *SysUserService) List(ctx context.Context, req *SysUserListReq) (*SysUserListResp, error) {
-	q := sysuser.ListQuery{Page: req.Page, PageSize: req.PageSize, Keyword: req.Keyword, Status: req.Status}
-	res, err := s.users.List(ctx, q)
+// List 账号列表（手机只回 mask，永不解密）。
+func (s *Service) List(ctx context.Context, req *SysUserListReq) (*SysUserListResp, error) {
+	res, err := s.users.List(ctx, sysuser.ListQuery{
+		Page: req.Page, PageSize: req.PageSize, Keyword: req.Keyword, Status: req.Status,
+	})
 	if err != nil {
 		return nil, err
 	}
 	items := make([]UserView, 0, len(res.Items))
 	for i := range res.Items {
-		items = append(items, toUserView(&res.Items[i]))
+		items = append(items, toView(&res.Items[i]))
 	}
 	return &SysUserListResp{Items: items, Total: res.Total, Page: res.Page, PageSize: res.PageSize}, nil
 }
 
 // Create 创建账号（docs §3.3：username 禁 11 位纯数字；uk_mobile 一人一手机）。
-func (s *SysUserService) Create(ctx context.Context, req *CreateSysUserReq, opUID int64, p RequestParams) (*UserView, error) {
+func (s *Service) Create(ctx context.Context, req *CreateSysUserReq, opUID int64, p types.RequestParams) (*UserView, error) {
 	if !validUsername(req.Username) {
 		return nil, sysuser.ErrBadUsername
 	}
@@ -70,6 +145,7 @@ func (s *SysUserService) Create(ctx context.Context, req *CreateSysUserReq, opUI
 		return nil, err
 	}
 	now := time.Now()
+	c.PwdUpdatedAt = &now
 	u := &sysuser.User{
 		ID:         s.ids.New(),
 		Username:   req.Username,
@@ -79,8 +155,6 @@ func (s *SysUserService) Create(ctx context.Context, req *CreateSysUserReq, opUI
 		Credential: c,
 		Mobile:     m,
 	}
-	u.PwdUpdatedAt = &now
-
 	// 并发撞唯一键：仓储内转换为 ErrUsernameTaken/ErrMobileTaken（docs §3.1）
 	if err := s.users.Create(ctx, u); err != nil {
 		return nil, err
@@ -89,24 +163,23 @@ func (s *SysUserService) Create(ctx context.Context, req *CreateSysUserReq, opUI
 	s.audit("sysuser.create", opUID, p, map[string]interface{}{
 		"target_id": u.ID, "target_username": u.Username, "target_mobile": u.Mobile.Mask,
 	})
-	v := toUserView(u)
+	v := toView(u)
 	return &v, nil
 }
 
 // Update 修改账号（name/email/mobile/status；username 不可改）。
-func (s *SysUserService) Update(ctx context.Context, targetID int64, req *UpdateSysUserReq, opUID int64, p RequestParams, now time.Time) (*UserView, error) {
+func (s *Service) Update(ctx context.Context, targetID int64, req *UpdateSysUserReq, opUID int64, p types.RequestParams, now time.Time) (*UserView, error) {
 	u, err := s.load(ctx, targetID)
 	if err != nil {
 		return nil, err
 	}
-
 	// 超管保护：修改超管资料仅超管本人（docs §8.3）
 	if err := s.protectSuper(ctx, u, opUID); err != nil {
 		return nil, err
 	}
-	// 停用超管在任何情况下都禁止（sym 用意：防“通道故障导致平台失管”的反面对称）
+	// 停用超管在任何情况下都禁止（防“通道故障导致平台失管”的反面对称）
 	if req.Status != nil && *req.Status != sysuser.StatusActive && u.IsSuper() {
-		return nil, errSuperAdminProtected
+		return nil, ErrSuperAdminProtected
 	}
 
 	if err := s.users.SaveProfile(ctx, u.ID, req.Name, req.Email, req.Status); err != nil {
@@ -136,19 +209,19 @@ func (s *SysUserService) Update(ctx context.Context, targetID int64, req *Update
 	s.audit("sysuser.update", opUID, p, map[string]interface{}{
 		"target_id": u.ID, "set_status": req.Status, "set_mobile": req.Mobile != "",
 	})
-	v := toUserView(updated)
+	v := toView(updated)
 	return &v, nil
 }
 
 // Delete 停用（软删，docs §9）+ 全端秒踢。
-func (s *SysUserService) Delete(ctx context.Context, targetID int64, opUID int64, p RequestParams, now time.Time) error {
+func (s *Service) Delete(ctx context.Context, targetID int64, opUID int64, p types.RequestParams, now time.Time) error {
 	u, err := s.load(ctx, targetID)
 	if err != nil {
 		return err
 	}
 	// 超管保护：不可停用/删除（docs §8.3）
 	if u.IsSuper() {
-		return errSuperAdminProtected
+		return ErrSuperAdminProtected
 	}
 	if err := s.users.SoftDelete(ctx, u.ID, now); err != nil {
 		return err
@@ -163,7 +236,7 @@ func (s *SysUserService) Delete(ctx context.Context, targetID int64, opUID int64
 }
 
 // Unlock 解锁：清 DB 失败计数/冻结 + 清 Redis 计数与锁标记。
-func (s *SysUserService) Unlock(ctx context.Context, targetID int64, opUID int64, p RequestParams) error {
+func (s *Service) Unlock(ctx context.Context, targetID int64, opUID int64, p types.RequestParams) error {
 	u, err := s.load(ctx, targetID)
 	if err != nil {
 		return err
@@ -179,7 +252,7 @@ func (s *SysUserService) Unlock(ctx context.Context, targetID int64, opUID int64
 }
 
 // ResetPassword 重置密码（docs §9：强审计）。改密即踢全部会话（docs §7/§10）。
-func (s *SysUserService) ResetPassword(ctx context.Context, targetID int64, req *ResetPasswordReq, opUID int64, p RequestParams, now time.Time) error {
+func (s *Service) ResetPassword(ctx context.Context, targetID int64, req *ResetPasswordReq, opUID int64, p types.RequestParams, now time.Time) error {
 	if err := sysuser.ValidatePassword(req.Password); err != nil {
 		return err
 	}
@@ -211,14 +284,8 @@ func (s *SysUserService) ResetPassword(ctx context.Context, targetID int64, req 
 
 // ---------- 内部 ----------
 
-// errSuperAdminProtected 超管受保护的应用层哨兵（映射 code.ErrorSuperAdminProtected）。
-var errSuperAdminProtected = fmt.Errorf("super admin protected")
-
-// SuperAdminProtected 暴露给 errors.go 的哨兵（跨文件同包使用）。
-func IsSuperAdminProtected(err error) bool { return err == errSuperAdminProtected }
-
-// load 目标聚合必须存在。
-func (s *SysUserService) load(ctx context.Context, id int64) (*sysuser.User, error) {
+// load 目标聚合必须存在（未命中映射为 code.ErrorSysUserNotFound）。
+func (s *Service) load(ctx context.Context, id int64) (*sysuser.User, error) {
 	u, err := s.users.ByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -230,7 +297,7 @@ func (s *SysUserService) load(ctx context.Context, id int64) (*sysuser.User, err
 }
 
 // protectSuper 修改/重置超管资料仅超管本人；其余操作者拒绝。
-func (s *SysUserService) protectSuper(ctx context.Context, target *sysuser.User, opUID int64) error {
+func (s *Service) protectSuper(ctx context.Context, target *sysuser.User, opUID int64) error {
 	if !target.IsSuper() {
 		return nil
 	}
@@ -239,17 +306,17 @@ func (s *SysUserService) protectSuper(ctx context.Context, target *sysuser.User,
 		return err
 	}
 	if op == nil || op.ID != target.ID {
-		return errSuperAdminProtected
+		return ErrSuperAdminProtected
 	}
 	return nil
 }
 
-// validUsername 领域不变式包装（形似手机号/11 位纯数字/长度）。
+// validUsername 领域不变式包装（形似手机号/11 位纯数字/长度，docs §3.3③）。
 func validUsername(u string) bool {
 	if u == "" || len(u) > 64 {
 		return false
 	}
-	if sysuser.LooksLikeMobile(u) { // 含“138-0000-0000”式变体：源头禁止歧义（docs §3.3③）
+	if sysuser.LooksLikeMobile(u) { // 含“138-0000-0000”式变体：源头禁歧义
 		return false
 	}
 	return true
@@ -257,7 +324,7 @@ func validUsername(u string) bool {
 
 // audit 安全审计（docs §8.3：对超管账号的一切操作强制审计；
 // 这里对全量管理操作统一审计，超管目标自然被覆盖）。
-func (s *SysUserService) audit(action string, opUID int64, p RequestParams, detail map[string]interface{}) {
+func (s *Service) audit(action string, opUID int64, p types.RequestParams, detail map[string]interface{}) {
 	props := map[string]interface{}{"operator_id": opUID, "operator_ip": p.IP}
 	for k, v := range detail {
 		props[k] = v

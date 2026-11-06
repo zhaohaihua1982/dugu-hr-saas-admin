@@ -6,13 +6,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"dugu-hr-saas-admin/application"
+	appauth "dugu-hr-saas-admin/application/auth"
 	"dugu-hr-saas-admin/pkg/code"
 	"dugu-hr-saas-admin/pkg/i18n"
 	"dugu-hr-saas-admin/pkg/utils/ctl"
 )
 
-// 鉴权中间件写入 gin context 的 key（与 middleware.JwtAuth 约定一致）。
+// 鉴权中间件写入 gin context 的 key（与 middleware.AuthGuard 约定一致）。
 const (
 	keyUID = "uid"
 	keyJTI = "jti"
@@ -30,7 +30,7 @@ func (p *AuthAPI) GetCaptcha(ctx *gin.Context) {
 
 // SendSms POST /auth/sms/send。
 func (p *AuthAPI) SendSms(ctx *gin.Context) {
-	var req application.SendSmsReq
+	var req appauth.SendSmsReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return
@@ -56,7 +56,7 @@ func (p *AuthAPI) SendSms(ctx *gin.Context) {
 
 // LoginPassword POST /auth/login/password。
 func (p *AuthAPI) LoginPassword(ctx *gin.Context) {
-	var req application.LoginPasswordReq
+	var req appauth.LoginPasswordReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return
@@ -72,7 +72,7 @@ func (p *AuthAPI) LoginPassword(ctx *gin.Context) {
 
 // LoginSms POST /auth/login/sms。
 func (p *AuthAPI) LoginSms(ctx *gin.Context) {
-	var req application.LoginSmsReq
+	var req appauth.LoginSmsReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return
@@ -85,7 +85,7 @@ func (p *AuthAPI) LoginSms(ctx *gin.Context) {
 	ctl.RespSuccess(ctx, resp)
 }
 
-// Logout POST /auth/logout（需登录态）。
+// Logout POST /auth/logout（需登录态，白名单外由 AuthGuard 拦截）。
 func (p *AuthAPI) Logout(ctx *gin.Context) {
 	if err := p.auth.Logout(ctx.Request.Context(), ctx.GetInt64(keyUID), ctx.GetString(keyJTI)); err != nil {
 		ErrorResponse(ctx, err)
@@ -102,9 +102,4 @@ func (p *AuthAPI) Me(ctx *gin.Context) {
 		return
 	}
 	ctl.RespSuccess(ctx, gin.H{"user": user, "password_stale": stale})
-}
-
-// requestParams 提取 IP/UA 传给应用层。
-func requestParams(ctx *gin.Context) application.RequestParams {
-	return application.RequestParams{IP: ctx.ClientIP(), UA: ctx.GetHeader("User-Agent")}
 }

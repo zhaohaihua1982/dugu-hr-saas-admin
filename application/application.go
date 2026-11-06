@@ -1,21 +1,28 @@
+// Package application —— 应用层根包：用例容器与总错误映射。
+// （用例本体按领域拆分子包：auth / sysuser / loginlog；共享上下文类型见 types）
 package application
 
 import (
 	"errors"
 
+	"dugu-hr-saas-admin/application/auth"
+	apploginlog "dugu-hr-saas-admin/application/loginlog"
+	appsysuser "dugu-hr-saas-admin/application/sysuser"
 	"dugu-hr-saas-admin/domain/authn"
 	"dugu-hr-saas-admin/domain/sysuser"
 	"dugu-hr-saas-admin/pkg/code"
 )
 
-// ErrBadRequest 业务级参数/格式错误（api 层不需要额外细分）。
-var (
-	ErrIncorrectRange = errors.New("application: bad time range")
-)
+// Services 应用层用例集合（bootstrap 装配后整体交给 interfaces）。
+type Services struct {
+	Auth  *auth.Service
+	Users *appsysuser.Service
+	Logs  *apploginlog.Service
+}
 
-// CodeOf 领域错误 → pkg/code 业务码。接口层组装响应时使用。
-// 途径：typed As（锁定剩秒）→ domain 哨兵 → 兜底（未知错误视为数据库错误，
-// 不把内幕漏给用户，docs §8.4 延伸）。
+// CodeOf 领域错误 → pkg/code 业务码（api 层组装响应时使用）。
+// 途径：typed As（锁定剩秒）→ domain 哨兵 → 用例哨兵 → 兜底
+// （未知错误视为数据库错误，不把内幕漏给用户，docs §8.4 延伸）。
 func CodeOf(err error) int {
 	if err == nil {
 		return code.SUCCESS
@@ -51,9 +58,9 @@ func CodeOf(err error) int {
 		return code.ErrorSendSms
 	case errors.Is(err, authn.ErrRateLimited):
 		return code.ErrorRateLimited
-	case errors.Is(err, ErrIncorrectRange):
+	case errors.Is(err, apploginlog.ErrBadRange):
 		return code.InvalidParams
-	case IsSuperAdminProtected(err):
+	case errors.Is(err, appsysuser.ErrSuperAdminProtected):
 		return code.ErrorSuperAdminProtected
 	}
 	return code.ErrorDatabase
