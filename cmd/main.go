@@ -1,12 +1,14 @@
 // main —— dugu-hr-saas-admin 启动入口。
-// 结构参考 go-demo/app/cmd/main.go：run() 包裹全部退出路径 + 信号驱动的优雅关停；
-// 路由/业务层沿用本仓库的 gin-mall 标准分层（routes.NewRouter）。
+// 结构参考 go-demo：run() 包裹全部退出路径 + 信号驱动优雅关停。
+// 装配严格按标准DDD依赖方向：interfaces ← application ← domain ← infrastructure 实现。
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,11 +19,26 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"dugu-hr-saas-admin/application"
 	conf "dugu-hr-saas-admin/config"
-	"dugu-hr-saas-admin/repository/cache"
-	"dugu-hr-saas-admin/repository/db/dao"
+	"dugu-hr-saas-admin/domain/authn"
+	"dugu-hr-saas-admin/domain/sysuser"
+	"dugu-hr-saas-admin/infrastructure/cache"
+	"dugu-hr-saas-admin/infrastructure/captcha"
+	"dugu-hr-saas-admin/infrastructure/crypto"
+	dbpkg "dugu-hr-saas-admin/infrastructure/db"
+	"dugu-hr-saas-admin/infrastructure/db/dao"
+	idpkg "dugu-hr-saas-admin/infrastructure/id"
+	"dugu-hr-saas-admin/infrastructure/token"
+	"dugu-hr-saas-admin/middleware"
 	"dugu-hr-saas-admin/routes"
 )
+
+// assembled 装配后的应用句柄（gin 引擎 + 依赖释放）。
+type assembled struct {
+	router      *gin.Engine
+	releaseHost func() error
+}
 
 func main() {
 	// log.Fatalf 会跳过 defer，所以资源释放必须放在 run 内部
@@ -31,18 +48,23 @@ func main() {
 }
 
 func run() error {
-	// 收到 SIGINT/SIGTERM 时关闭 ctx，触发优雅退出，程序不再只能被 kill
+	// 收到 SIGINT/SIGTERM 时关闭 ctx，优雅退出，程序不再只能被 kill
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 加载配置 → MySQL（含迁移与超管 seed）→ Redis，任一步失败先释放在建资源
-	if err := loading(); err != nil {
+	a, err := assemble(ctx)
+	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := a.releaseHost(); err != nil {
+			log.Printf("释放资源失败: %v", err)
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:    addr(),
-		Handler: newRouter(),
+		Handler: a.router,
 		// ReadHeaderTimeout 防止恶意客户端只发一个请求头占住连接（slowloris）
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -62,55 +84,102 @@ func run() error {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	// 等优雅关停结束，保证 defer closeApp() 在所有连接释放之后执行
 	if err := <-shutdownDone; err != nil {
 		log.Printf("优雅关停失败: %v", err)
 	}
 	return nil
 }
 
-// loading 启动依赖装配：配置 → MySQL → Redis。
-// 任一步失败都会先释放已建立的资源，再交由调用方决定退出方式。
-func loading() error {
+// assemble 标准DDD装配（依赖方向自下而上）：
+//
+//	conf → infrastructure(db/cache/crypto/token/id/captcha)
+//	  → 以 domain 端口注入 application 用例
+//	  → routes(interfaces) 只引用 application
+func assemble(ctx context.Context) (*assembled, error) {
 	conf.InitConfig()
+	debug := debugMode()
 
-	// 生产环境禁止以内置默认密钥起跑（密钥必须 SAAS_* 注入）
-	if conf.IsPro() {
-		if strings.HasPrefix(conf.Config.EncryptSecret.JwtSecret, "dev-only") {
-			return errors.New("生产环境必须通过 SAAS_JWT_SECRET/SAAS_MOBILE_HMAC/SAAS_MOBILE_AES 覆盖默认密钥")
+	// 生产环境禁止以内置默认密钥起跑（docs：密钥必须 SAAS_* 注入）
+	if conf.IsPro() && strings.HasPrefix(conf.Config.EncryptSecret.JwtSecret, "dev-only") {
+		return nil, errors.New("生产环境必须通过 SAAS_JWT_SECRET/SAAS_MOBILE_HMAC/SAAS_MOBILE_AES 覆盖默认密钥")
+	}
+
+	// ---------- infrastructure ----------
+	database, err := dbpkg.Open(debug)
+	if err != nil {
+		return nil, err
+	}
+	if err := database.Migrate(ctx); err != nil {
+		_ = database.Close()
+		return nil, err
+	}
+	redisClient, err := cache.Open()
+	if err != nil {
+		_ = database.Close()
+		return nil, err
+	}
+
+	// ---------- infrastructure 实现（实现 domain 端口） ----------
+	mobileCrypto, hErr := crypto.NewMobileCrypto(
+		conf.Config.EncryptSecret.MobileHmac, conf.Config.EncryptSecret.MobileAes)
+	if hErr != nil {
+		_ = redisClient.Close()
+		_ = database.Close()
+		return nil, hErr
+	}
+	hasher := crypto.NewPasswordHasher()
+	tokens := token.New(conf.Config.EncryptSecret.JwtSecret)
+	ids, iErr := idpkg.NewSnowflake(1)
+	if iErr != nil {
+		_ = redisClient.Close()
+		_ = database.Close()
+		return nil, iErr
+	}
+
+	users := dao.NewSysUserRepository(database)
+	logsRepo := dao.NewLoginLogRepository(database)
+	if sErr := database.SeedSuperAdmin(ctx, users, *conf.Config.BootstrapAdmin, hasher, mobileCrypto, ids); sErr != nil {
+		_ = redisClient.Close()
+		_ = database.Close()
+		return nil, sErr
+	}
+
+	sessions := cache.NewSessionStore(redisClient)
+	captchaSvc := cache.NewCaptchaService(redisClient, captcha.Generate)
+	guard := cache.NewLoginGuard(redisClient)
+	lock := cache.NewLockGuard(redisClient)
+	codes := cache.NewSmsCodeStore(redisClient)
+
+	// ---------- application ----------
+	svc := &application.Services{
+		Auth: application.NewAuthService(users, logsRepo, tokens, sessions, captchaSvc,
+			guard, lock, codes, smsSenderStub{}, mobileCrypto, hasher, ids),
+		Users: application.NewSysUserService(users, sessions, codes, lock, mobileCrypto, hasher, ids),
+		Logs:  application.NewLoginLogService(logsRepo),
+	}
+
+	// ---------- interfaces ----------
+	router := routes.NewRouter(svc, middleware.JwtAuth(tokens, sessions))
+
+	return &assembled{router: router, releaseHost: func() error {
+		var errs []error
+		if err := redisClient.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("关闭 redis: %w", err))
 		}
-	}
+		if err := database.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("关闭 mysql: %w", err))
+		}
+		return errors.Join(errs...)
+	}}, nil
+}
 
-	if err := dao.InitMySQL(); err != nil {
-		return err
-	}
-	if err := cache.InitCache(); err != nil {
-		_ = dao.Close() // 回滚已建立的 MySQL 连接
-		return err
-	}
+// smsSenderStub 短信通道开发桩：实现 authn.SmsSender。接入真实通道（阿里云/腾讯云）
+// 时替换实现即可，登录管线与配额规则不变（docs §5）。
+type smsSenderStub struct{}
+
+func (smsSenderStub) Send(_ context.Context, mobile, code string) error {
+	slog.Info("sms.send_stub 验证码已生成（生产环境请替换真实通道）", "mobile", sysuser.MaskMobile(mobile), "code", code)
 	return nil
-}
-
-// closeApp 逆序释放依赖（Redis → MySQL）；多个错误合并返回。
-func closeApp() {
-	var errs []error
-	if err := cache.Close(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := dao.Close(); err != nil {
-		errs = append(errs, err)
-	}
-	if err := errors.Join(errs...); err != nil {
-		log.Printf("释放资源失败: %v", err)
-	}
-}
-
-// newRouter 装配 gin 路由（http.Server 直接托管 gin.Engine）。
-func newRouter() *gin.Engine {
-	if !debugMode() {
-		gin.SetMode(gin.ReleaseMode)
-	}
-	return routes.NewRouter()
 }
 
 // addr 依次取 SAAS_ADDR 环境变量、yaml system.httpPort，缺省 :8080。
@@ -124,12 +193,11 @@ func addr() string {
 	return ":8080"
 }
 
-// debugMode 从 SAAS_DEBUG 读取，开启后 GORM 打印 SQL 日志。
-// 只认 true/false，其他值启动即失败，避免手滑写成 "ture" 时静默按 false 跑。
+// debugMode 从 SAAS_DEBUG 读取；只认 true/false，其他值启动即失败。
 func debugMode() bool {
 	v := strings.TrimSpace(os.Getenv("SAAS_DEBUG"))
 	if v == "" {
-		return conf.DebugMode() // 回落 yaml 的 system.appEnv 判定（dev/debug/local）
+		return conf.DebugMode()
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
@@ -137,3 +205,6 @@ func debugMode() bool {
 	}
 	return b
 }
+
+// 编译期断言：桩实现满足端口。
+var _ authn.SmsSender = smsSenderStub{}

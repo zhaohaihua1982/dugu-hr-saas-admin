@@ -6,7 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"dugu-hr-saas-admin/pkg/e"
+	"dugu-hr-saas-admin/pkg/code"
 	"dugu-hr-saas-admin/pkg/utils/log"
 )
 
@@ -23,8 +23,8 @@ func RespSuccess(ctx *gin.Context, data interface{}) {
 		data = "ok"
 	}
 	ctx.JSON(http.StatusOK, Response{
-		Status: e.SUCCESS,
-		Msg:    e.GetMsg(e.SUCCESS),
+		Status: code.SUCCESS,
+		Msg:    code.GetMsg(code.SUCCESS),
 		Data:   data,
 	})
 }
@@ -37,7 +37,7 @@ func RespError(ctx *gin.Context, err error, status int, data interface{}) {
 	}
 	ctx.JSON(http.StatusOK, Response{
 		Status: status,
-		Msg:    e.GetMsg(status),
+		Msg:    code.GetMsg(status),
 		Data:   data,
 	})
 }

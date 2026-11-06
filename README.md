@@ -1,69 +1,60 @@
-# dugu-hr-saas-admin · SaaS 管理后台（Gin 版）
+# dugu-hr-saas-admin · SaaS 管理后台（标准 DDD）
 
 SaaS 平台运营方自己的管理后台账号体系（`sys_user`），业务设计见
 [docs/SaaS管理后台-管理账号(sys_user)设计.md](docs/SaaS管理后台-管理账号(sys_user)设计.md)。
-范围：**P0~P1.5**（密码登录/短信登录/图形验证码/失败锁定/会话/账号管理/登录日志），
-租户侧 `hr_account` 留待后续（§12）。
+范围：**P0~P1.5**。架构为**严格按照标准 DDD 四层**实现，不混杂非 DDD 结构。
 
-## 技术栈与结构（标准框架：Gin + GORM + Redis + Viper）
+## 分层与依赖方向（依赖倒置：下层不知道上层）
 
 ```
-cmd/main.go                 启动入口（loading：配置→MySQL（迁移+seed 超管）→Redis）
-routes/router.go            路由注册（/api/v1/admin/*）
-api/v1/                     Handler 层（绑定请求 → service → 统一响应）
-service/                    业务层（登录管线、账号管理、错误→业务码映射）
-types/                      请求/响应 DTO（binding 校验）
-middleware/                 CORS、会话鉴权（JWT + Redis 会话键）
-consts/                     常量（枚举/阈值/Redis key）
-repository/db/model/        表对象（与 config/sql/*.sql DDL 对应）
-repository/db/dao/          仓储（迁移、seed、账号/日志读写）
-repository/cache/           Redis（会话/验证码/短信码/失败计数/限流）
-pkg/e/                      业务错误码与文案
-pkg/utils/                  encryption（bcrypt/手机号三列）、jwt、captcha(SVG)、math、ctl、log、uid(雪花)
-config/                     配置加载 + locales/config.yaml + sql/*.sql（内嵌迁移）
-docs/                       业务设计文档
+interfaces（api/ routes/ middleware/）
+        │  只持有 application 用例的引用
+application（application/）
+        │  用例编排；只依赖 domain 的接口（端口）与聚合
+domain（domain/）                        ← 零框架依赖：不 import gin/gorm/redis/config
+        │  聚合根、值对象、领域服务、仓储与能力端口、领域错误
+infrastructure（infrastructure/）
+        实现 domain 端口：gorm 仓储、redis 会话/验证码/风控、bcrypt/手机号三列加密、JWT、雪花ID
+pkg/、conf/                              通用件与配置
+cmd/main.go                              启动 + bootstrap 装配（依赖注入 Composition Root）
 ```
 
-## 快速启动
+| 目录 | 职责 |
+|---|---|
+| `domain/sysuser` | sys_user 聚合根、Credential/Mobile 值对象、`Repository`/`MobileCrypto`/`PasswordHasher` 端口、标识解析领域服务（§3.3③）、聚合不变式（超管保护/密码策略/锁定） |
+| `domain/loginlog` | 登录日志聚合；`Append` 语义即“写事务外”，`FailReason` 固定枚举 |
+| `domain/authn` | 会话/令牌/验证码/短信/风控端口（TokenIssuer、SessionStore、CaptchaService、SmsSender、SmsCodeStore、LoginGuard、LockGuard）+ 领域错误 |
+| `application` | 用例：`Auth`（登录管线三入口汇一）、`SysUser`（CRUD/解锁/重置）、`LoginLog`；错误→业务码映射 |
+| `api/v1` + `routes` + `middleware` | 绑定请求 → 调用用例 → 统一响应 `{status,msg,data}`；JWT+Redis 会话鉴权中间件 |
+| `infrastructure/db` | GORM 连接、内嵌 SQL 迁移、PO↔领域实体互转、超管 seed（经仓储端口写入） |
+| `infrastructure/cache` | Redis 实现：会话（8h 滑动/24h 硬上限/秒踢）、图形码、短信码、失败计数/限流 |
+| `infrastructure/crypto` `token` `id` `captcha` | bcrypt+旧算法透明升级、手机 HMAC/AES-GCM 三列、JWT HS256、雪花 ID |
+| `cmd/main.go` | run() 优雅关停 + assemble() 装配（Composition Root） |
+
+## 启动
 
 ```bash
-# 1. 建库（若未建）
 mysql -uroot -p -e "CREATE DATABASE IF NOT EXISTS \`dugu-hr-saas-admin\` DEFAULT CHARSET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
-
-# 2. 启动（迁移与超管 seed 自动执行）
 make run
+```
 
-# 3. 首次登录（P0 验收标准）
+首次启动自动迁移建表并 seed 超管 `admin`（密码见 `bootstrapAdmin`/`SAAS_BOOTSTRAP_ADMIN_PASSWORD`）：
+
+```bash
 curl -X POST localhost:8080/api/v1/admin/auth/login/password \
   -H 'Content-Type: application/json' \
   -d '{"identifier":"admin","password":"HrSaas@2026#Admin"}'
 ```
 
-首次启动且 `sys_user` 表为空时，会按 `config/locales/config.yaml` 的
-`bootstrapAdmin` 创建内置超管 `admin`（建议用环境变量覆盖密码/手机）：
-
-```bash
-SAAS_BOOTSTRAP_ADMIN_PASSWORD='YourStr0ng#Pwd' \
-SAAS_MYSQL_DEFAULT_PASSWORD='your-mysql-pwd' \
-SAAS_JWT_SECRET='<≥16位随机串>' \
-SAAS_MOBILE_HMAC='<≥16位随机串>' \
-SAAS_MOBILE_AES='<64位hex>' \
-make run
-```
-
-> `appEnv=prod` 时必须全部使用环境变量覆盖，禁止内置默认密钥上线。
-
-## 环境变量覆盖
+## 环境变量
 
 | 变量 | 说明 |
 |---|---|
-| `SAAS_MYSQL_DEFAULT_HOST/PORT/NAME/USER/PASSWORD` | MySQL 连接（dbName 固定 `dugu-hr-saas-admin`） |
+| `SAAS_MYSQL_DEFAULT_HOST/PORT/NAME/USER/PASSWORD` | MySQL（dbName 固定 `dugu-hr-saas-admin`） |
 | `SAAS_REDIS_HOST/PORT/USERNAME/PASSWORD/DB` | Redis |
-| `SAAS_JWT_SECRET` | 会话 JWT 签名密钥 |
-| `SAAS_MOBILE_HMAC` | 手机号 HMAC-SHA256 密钥（mobile_hash） |
-| `SAAS_MOBILE_AES` | 手机号 AES-256-GCM 密钥（64 位 hex，mobile_enc） |
+| `SAAS_JWT_SECRET` / `SAAS_MOBILE_HMAC` / `SAAS_MOBILE_AES` | 会话签名 / 手机号 HMAC / AES-256 键（64 位 hex）；prod 环境必须覆盖 |
 | `SAAS_BOOTSTRAP_ADMIN_PASSWORD/MOBILE/NAME/EMAIL` | 初始超管 |
-| `SAAS_HTTP_PORT` | 监听端口（默认 :8080） |
+| `SAAS_ADDR` / `SAAS_DEBUG` | 监听地址 / 调试（GORM SQL 日志） |
 
 ## 接口清单（docs §9）
 
@@ -72,32 +63,23 @@ POST /api/v1/admin/auth/captcha             获取图形验证码
 POST /api/v1/admin/auth/sms/send            发送登录短信（需图形码）
 POST /api/v1/admin/auth/login/password      账号或手机 + 密码
 POST /api/v1/admin/auth/login/sms           手机 + 短信码
-POST /api/v1/admin/auth/logout              登出当前会话（Bearer）
-GET  /api/v1/admin/auth/me                  当前用户信息（Bearer）
-
+POST /api/v1/admin/auth/logout              登出（Bearer）
+GET  /api/v1/admin/auth/me                  当前用户（Bearer）
 GET    /api/v1/admin/sys-users              列表（手机返回 mask）
 POST   /api/v1/admin/sys-users              创建
 PUT    /api/v1/admin/sys-users/{id}         修改
 DELETE /api/v1/admin/sys-users/{id}         停用（软删）
 POST   /api/v1/admin/sys-users/{id}/unlock  解锁
 POST   /api/v1/admin/sys-users/{id}/reset-password   重置密码（强审计）
-GET    /api/v1/admin/login-logs             登录日志查询
+GET    /api/v1/admin/login-logs             登录日志
 GET    /healthz                             存活探针
 ```
 
-鉴权方式：登录响应的 `token` 以 `Authorization: Bearer <token>` 携带。
-会话 8 小时滑动（每次请求续期），硬上限 24 小时；改密/停用即全端秒踢。
+## DDD 关键约定
 
-## 短信通道
-
-`service/logSmsSender` 为开发桩（验证码只打日志，不真实外发）。
-接入真实通道：实现 `service.SmsSender` 的 `Send` 并替换 `smsSender` 变量即可。
-限流与防轰炸规则（1 条/分钟、10 条/天、IP 100 条/天、图形码前置、防枚举 SEND_SKIPPED）已内建。
-
-## 常用 Makefile
-
-```bash
-make build   # 编译到 ./main
-make run     # 编译并运行
-make test    # go test ./...
-```
+- **domain 零依赖**：聚合/端口无 gin、gorm、redis、config 依赖；领域不读全局时钟，
+  时间由接口层传入用例（`now time.Time`），保证可测。
+- **端口即领域需求**：应用层只见 `sysuser.Repository`、`authn.SessionStore` 等接口，
+  换 MySQL/Redis 实现无需触碰业务逻辑。
+- **DB 兜底**：失败锁定 Redis 加速 + `sys_user.fail_count/locked_until` 双写（docs §6）；
+  Redis 故障回落 DB 判定，绝不“故障即放行”。

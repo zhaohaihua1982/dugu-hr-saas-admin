@@ -1,101 +1,97 @@
+// 认证接口（docs §9 全部 auth 路由）。
 package v1
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 
+	"dugu-hr-saas-admin/application"
 	"dugu-hr-saas-admin/pkg/utils/ctl"
-	"dugu-hr-saas-admin/service"
-	"dugu-hr-saas-admin/types"
 )
 
-// GetCaptchaHandler 获取图形验证码（docs §9）。
-func GetCaptchaHandler() gin.HandlerFunc {
-	return func(ctx *gin.Context) {
-		resp, err := service.GetAuthSrv().GetCaptcha()
-		if err != nil {
-			ctl.RespError(ctx, err, service.CodeOf(err), nil)
-			return
-		}
-		ctl.RespSuccess(ctx, resp)
+// 鉴权中间件写入 gin context 的 key（与 middleware.JwtAuth 约定一致）。
+const (
+	keyUID = "uid"
+	keyJTI = "jti"
+)
+
+// GetCaptcha POST /auth/captcha。
+func (p *AuthAPI) GetCaptcha(ctx *gin.Context) {
+	resp, err := p.auth.GetCaptcha(ctx.Request.Context())
+	if err != nil {
+		ErrorResponse(ctx, err)
+		return
 	}
+	ctl.RespSuccess(ctx, resp)
 }
 
-// SendSmsHandler 发送登录短信（需图形码，docs §9）。
-func SendSmsHandler() gin.HandlerFunc {
-	return func(ctx *gin.Context) {
-		var req types.SendSmsReq
-		if err := ctx.ShouldBindJSON(&req); err != nil {
-			ErrorResponse(ctx, err)
-			return
-		}
-		if err := service.GetAuthSrv().SendSms(ctx, &req, ctx.ClientIP()); err != nil {
-			ErrorResponse(ctx, err)
-			return
-		}
-		// 防枚举：无论手机号是否注册，成功口径一致
-		ctl.RespSuccess(ctx, "已发送")
+// SendSms POST /auth/sms/send。
+func (p *AuthAPI) SendSms(ctx *gin.Context) {
+	var req application.SendSmsReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(ctx, err)
+		return
 	}
+	if err := p.auth.SendSms(ctx.Request.Context(), &req, requestParams(ctx)); err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	// 防枚举：无论手机号是否注册，成功口径一致（docs §5）
+	ctl.RespSuccess(ctx, "已发送")
 }
 
-// LoginPasswordHandler 账号或手机 + 密码（docs §9）。
-func LoginPasswordHandler() gin.HandlerFunc {
-	return func(ctx *gin.Context) {
-		var req types.LoginPasswordReq
-		if err := ctx.ShouldBindJSON(&req); err != nil {
-			ErrorResponse(ctx, err)
-			return
-		}
-		resp, err := service.GetAuthSrv().LoginPassword(ctx, &req, ctx.ClientIP(), ctx.GetHeader("User-Agent"))
-		if err != nil {
-			respondAuthError(ctx, err)
-			return
-		}
-		ctl.RespSuccess(ctx, resp)
+// LoginPassword POST /auth/login/password。
+func (p *AuthAPI) LoginPassword(ctx *gin.Context) {
+	var req application.LoginPasswordReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(ctx, err)
+		return
 	}
+	// now 由接口层传给应用用例：时间属于边界，不藏在域内（可测性）
+	resp, err := p.auth.LoginPassword(ctx.Request.Context(), &req, requestParams(ctx), time.Now())
+	if err != nil {
+		respondAuthError(ctx, err)
+		return
+	}
+	ctl.RespSuccess(ctx, resp)
 }
 
-// LoginSmsHandler 手机 + 短信码（docs §9）。
-func LoginSmsHandler() gin.HandlerFunc {
-	return func(ctx *gin.Context) {
-		var req types.LoginSmsReq
-		if err := ctx.ShouldBindJSON(&req); err != nil {
-			ErrorResponse(ctx, err)
-			return
-		}
-		resp, err := service.GetAuthSrv().LoginSms(ctx, &req, ctx.ClientIP(), ctx.GetHeader("User-Agent"))
-		if err != nil {
-			respondAuthError(ctx, err)
-			return
-		}
-		ctl.RespSuccess(ctx, resp)
+// LoginSms POST /auth/login/sms。
+func (p *AuthAPI) LoginSms(ctx *gin.Context) {
+	var req application.LoginSmsReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(ctx, err)
+		return
 	}
+	resp, err := p.auth.LoginSms(ctx.Request.Context(), &req, requestParams(ctx), time.Now())
+	if err != nil {
+		respondAuthError(ctx, err)
+		return
+	}
+	ctl.RespSuccess(ctx, resp)
 }
 
-// LogoutHandler 登出当前会话（需要登录态）。
-func LogoutHandler() gin.HandlerFunc {
-	return func(ctx *gin.Context) {
-		uid := ctx.GetInt64(middlewareKeyUID)
-		jti := ctx.GetString(middlewareKeyJTI)
-		if err := service.GetAuthSrv().Logout(uid, jti); err != nil {
-			ctl.RespError(ctx, err, service.CodeOf(err), nil)
-			return
-		}
-		ctl.RespSuccess(ctx, nil)
+// Logout POST /auth/logout（需登录态）。
+func (p *AuthAPI) Logout(ctx *gin.Context) {
+	if err := p.auth.Logout(ctx.Request.Context(), ctx.GetInt64(keyUID), ctx.GetString(keyJTI)); err != nil {
+		ErrorResponse(ctx, err)
+		return
 	}
+	ctl.RespSuccess(ctx, nil)
 }
 
-// MeHandler 当前用户信息（需要登录态）。
-func MeHandler() gin.HandlerFunc {
-	return func(ctx *gin.Context) {
-		uid := ctx.GetInt64(middlewareKeyUID)
-		user, stale, err := service.GetAuthSrv().Me(ctx, uid)
-		if err != nil {
-			respondAuthError(ctx, err)
-			return
-		}
-		ctl.RespSuccess(ctx, gin.H{
-			"user":           user,
-			"password_stale": stale,
-		})
+// Me GET /auth/me（需登录态）。
+func (p *AuthAPI) Me(ctx *gin.Context) {
+	user, stale, err := p.auth.Me(ctx.Request.Context(), ctx.GetInt64(keyUID), time.Now())
+	if err != nil {
+		respondAuthError(ctx, err)
+		return
 	}
+	ctl.RespSuccess(ctx, gin.H{"user": user, "password_stale": stale})
+}
+
+// requestParams 提取 IP/UA 传给应用层。
+func requestParams(ctx *gin.Context) application.RequestParams {
+	return application.RequestParams{IP: ctx.ClientIP(), UA: ctx.GetHeader("User-Agent")}
 }

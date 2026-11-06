@@ -1,4 +1,4 @@
-// Package middleware 中间件：CORS 与会话鉴权。
+// Package middleware —— interfaces 层中间件：CORS、会话鉴权。
 package middleware
 
 import (
@@ -6,7 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"dugu-hr-saas-admin/pkg/e"
+	"dugu-hr-saas-admin/pkg/code"
 	"dugu-hr-saas-admin/pkg/utils/ctl"
 )
 
@@ -17,8 +17,6 @@ func Cors() gin.HandlerFunc {
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization, X-Requested-With")
 		c.Header("Access-Control-Allow-Credentials", "true")
-
-		// 预检请求直接放行
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
@@ -30,8 +28,8 @@ func Cors() gin.HandlerFunc {
 // authAbort 鉴权失败标准响应（登录态失效，业务码 30001）。
 func authAbort(c *gin.Context) {
 	c.AbortWithStatusJSON(http.StatusOK, ctl.Response{
-		Status: e.ErrorAuthCheckTokenFail,
-		Msg:    e.GetMsg(e.ErrorAuthCheckTokenFail),
+		Status: code.ErrorAuthCheckTokenFail,
+		Msg:    code.GetMsg(code.ErrorAuthCheckTokenFail),
 		Data:   nil,
 	})
 }
