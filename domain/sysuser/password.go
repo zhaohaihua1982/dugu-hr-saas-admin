@@ -62,6 +62,19 @@ func ValidatePassword(pwd string) error {
 	return nil
 }
 
+// ---------- 输入快筛（登录入口“达标才校验”，docs 精神：不浪费 bcrypt） ----------
+
+// PasswordMinPlausible 登录时密码的最低“可信长度”。
+// 新密码策略已是 ≥10 位（ValidatePassword），此处只拦明显乱填的请求
+// （低于 6 位在任何历代策略下都不可能是真实密码），免得为垃圾输入跑 bcrypt。
+const PasswordMinPlausible = 6
+
+// PlausiblePassword 登录入参快筛：太短/太长直接打回。
+// 说明：这是下限快筛，不是创建账号用的完整策略校验（ValidatePassword）。
+func PlausiblePassword(pwd string) bool {
+	return len(pwd) >= PasswordMinPlausible && len(pwd) <= 128
+}
+
 // ---------- 端口 ----------
 
 // PasswordHasher 密码哈希端口（infrastructure/crypto 实现）。

@@ -19,7 +19,19 @@ const (
 	LoginRateLimit  = 20             // 登录接口 IP 20 次/分钟（docs §8.6）
 	IPFailLimitHour = 50             // IP 维度撞库兜底 50 次/小时（docs §6）
 	StreakWindow    = time.Hour
+
+	// CaptchaIssueLimits 图形验证码签发防刷（docs §5“短信轰炸是真实资损”的同源逻辑，
+	// 图形码本身也是免费资源）：单 IP 10 次/分钟、60 次/小时；1 次/分钟兜底。
+	CaptchaMinuteLimit = 10
+	CaptchaHourLimit   = 60
+
+	// SmsCodeLength 短信码定长 6 位数字（docs §5）——不达标直接判参数错误，
+	// 不消耗 Redis 的一次性计数与试错窗口。
+	SmsCodeLength = 6
 )
+
+// ErrBadCodeFormat 短信码不满足定长/字符集（请求体格式问题，非凭证错误）。
+var ErrBadCodeFormat = errors.New("authn: sms code format invalid")
 
 // ---------- 领域错误（应用层据此统一为业务码） ----------
 
@@ -120,9 +132,11 @@ type SmsCodeStore interface {
 
 // ---------- 端口：风险控制（失败计数/锁定/限流，docs §5/§6/§8.6） ----------
 
-// LoginGuard IP 维度限流与撞库兜底、短信发送配额。
-// Redis 故障时实现**保守拒绝/告警放行由 application 决策**，端口只报错。
+// LoginGuard IP 维度限流与配额（含图形验证码签发防刷）。
+// Redis 故障时实现保守拒绝/告警放行由 application 决策，端口只报错。
 type LoginGuard interface {
+	// AllowCaptcha 图形验证码签发限流（10/min、60/h）。
+	AllowCaptcha(ctx context.Context, ip string) error
 	// AllowLogin 登录接口 IP 限流（20/min）。
 	AllowLogin(ctx context.Context, ip string) error
 	// AllowIPFail IP 撞库兜底（50/h）；

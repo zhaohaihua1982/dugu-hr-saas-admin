@@ -20,7 +20,7 @@ const (
 
 // GetCaptcha POST /auth/captcha。
 func (p *AuthAPI) GetCaptcha(ctx *gin.Context) {
-	resp, err := p.auth.GetCaptcha(ctx.Request.Context())
+	resp, err := p.auth.GetCaptcha(ctx.Request.Context(), requestParams(ctx))
 	if err != nil {
 		ErrorResponse(ctx, err)
 		return

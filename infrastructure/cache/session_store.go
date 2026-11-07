@@ -194,6 +194,25 @@ type LoginGuard struct{ c *Client }
 // NewLoginGuard 构造。
 func NewLoginGuard(c *Client) *LoginGuard { return &LoginGuard{c} }
 
+// AllowCaptcha 图形码签发防刷：单 IP 10 次/分钟 + 60 次/小时双窗口。
+func (g *LoginGuard) AllowCaptcha(ctx context.Context, ip string) error {
+	min, err := incrWindow(g.c, ctx, "captcha:limit:min:"+ip, time.Minute)
+	if err != nil {
+		return err
+	}
+	if min > authn.CaptchaMinuteLimit {
+		return authn.ErrRateLimited
+	}
+	hour, err := incrWindow(g.c, ctx, "captcha:limit:hour:"+ip, time.Hour)
+	if err != nil {
+		return err
+	}
+	if hour > authn.CaptchaHourLimit {
+		return authn.ErrRateLimited
+	}
+	return nil
+}
+
 // AllowLogin 登录接口 IP 限制：20 次/分钟。
 func (g *LoginGuard) AllowLogin(ctx context.Context, ip string) error {
 	n, err := incrWindow(g.c, ctx, keyLoginIPLimit+ip, time.Minute)

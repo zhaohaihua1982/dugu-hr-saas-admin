@@ -94,8 +94,12 @@ func NewService(
 	}
 }
 
-// GetCaptcha 获取图形验证码（一次性、5 分钟有效）。
-func (s *Service) GetCaptcha(ctx context.Context) (*CaptchaGetResp, error) {
+// GetCaptcha 获取图形验证码（一次性、5 分钟有效；签发有 IP 防刷配额）。
+func (s *Service) GetCaptcha(ctx context.Context, p types.RequestParams) (*CaptchaGetResp, error) {
+	// 防刷：白名单接口同样要限制拉取频率（10/min、60/h），否则白名单成免费放大器
+	if err := s.guard.AllowCaptcha(ctx, p.IP); err != nil {
+		return nil, err
+	}
 	c, err := s.captcha.Issue(ctx)
 	if err != nil {
 		return nil, err
@@ -106,6 +110,16 @@ func (s *Service) GetCaptcha(ctx context.Context) (*CaptchaGetResp, error) {
 // LoginPassword 账号或手机 + 密码（docs §4.2 入口一/二）。
 func (s *Service) LoginPassword(ctx context.Context, req *LoginPasswordReq, p types.RequestParams, now time.Time) (*LoginResp, error) {
 	ident := strings.TrimSpace(req.Identifier)
+
+	// 输入快筛（docs：达标才进入管线）：账号长度/密码长度明显不合法的请求，
+	// 直接判参数错误返回——不进 DB 查询、不进 Redis 计数、更不跑 bcrypt。
+	// 判据与账号是否真实存在无关（对存在/不存在的账号同样拒绝），无枚举信号。
+	if !sysuser.PlausibleIdentifier(ident) {
+		return nil, fmt.Errorf("%w: identifier", sysuser.ErrBadUsername)
+	}
+	if !sysuser.PlausiblePassword(req.Password) {
+		return nil, fmt.Errorf("%w: password", sysuser.ErrWeakPassword)
+	}
 
 	// IP 限流（20/min）与撞库兜底（50/h）
 	if err := s.guard.AllowLogin(ctx, p.IP); err != nil {
@@ -164,7 +178,12 @@ func (s *Service) LoginSms(ctx context.Context, req *LoginSmsReq, p types.Reques
 		return nil, err
 	}
 
-	// 因子：验证码（用途隔离在存储 key 内）
+	// 因子：验证码——先做定长/字符集快筛（6 位数字），不达标不打 Redis 与试错计数
+	if !validSmsCode(req.Code) {
+		s.recordLog(0, sysuser.MaskMobile(norm), loginlog.SMS, sysuser.ViaMobile, false, loginlog.ReasonSmsCodeError, p)
+		return nil, authn.ErrBadCodeFormat
+	}
+	// 用途隔离在存储 key 内
 	switch res, verr := s.codes.Verify(ctx, authn.PurposeLogin, s.mobile.Hash(norm), req.Code); {
 	case verr != nil:
 		return nil, verr
@@ -192,7 +211,10 @@ func (s *Service) LoginSms(ctx context.Context, req *LoginSmsReq, p types.Reques
 
 // SendSms 发送登录短信（docs §5 全部规则）。
 func (s *Service) SendSms(ctx context.Context, req *SendSmsReq, p types.RequestParams) error {
-	// 前置图形码（短信轰炸是真实资损）
+	// 前置图形码（短信轰炸是真实资损）；答案先过格式快筛再碰 Redis
+	if !plausibleCaptchaCode(req.CaptchaCode) {
+		return authn.ErrCaptchaFailed
+	}
 	ok, err := s.captcha.Verify(ctx, req.CaptchaID, req.CaptchaCode)
 	if err != nil {
 		return err
@@ -280,6 +302,9 @@ func (s *Service) requireCaptcha(ctx context.Context, u *sysuser.User, idMask st
 	}
 	if captID == "" || captCode == "" {
 		return authn.ErrCaptchaRequired
+	}
+	if !plausibleCaptchaCode(captCode) { // 图形码答案定长 5 位数字，格式不对不必碰 Redis
+		return authn.ErrCaptchaFailed
 	}
 	ok, err := s.captcha.Verify(ctx, captID, captCode)
 	if err != nil {
@@ -424,6 +449,38 @@ func (s *Service) recordLog(userID int64, identMask string, t loginlog.Type, via
 			slog.Warn("登录日志写库失败（需监控告警）", "err", err)
 		}
 	}(p)
+}
+
+// validSmsCode 短信码格式：恰为 SmsCodeLength 位纯数字。
+func validSmsCode(code string) bool {
+	if len(code) != authn.SmsCodeLength {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// plausibleCaptchaCode 图形码答案格式（5 位数字）。
+func plausibleCaptchaCode(code string) bool {
+	return validSmsCodeConsistent(code, svcCaptchaLen)
+}
+
+const svcCaptchaLen = 5
+
+func validSmsCodeConsistent(code string, want int) bool {
+	if len(code) != want {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // smsCode 生成短信验证码（6 位数字，crypto/rand；docs §5）。

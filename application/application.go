@@ -58,6 +58,8 @@ func CodeOf(err error) int {
 		return code.ErrorSendSms
 	case errors.Is(err, authn.ErrRateLimited):
 		return code.ErrorRateLimited
+	case errors.Is(err, authn.ErrBadCodeFormat):
+		return code.InvalidParams
 	case errors.Is(err, apploginlog.ErrBadRange):
 		return code.InvalidParams
 	case errors.Is(err, appsysuser.ErrSuperAdminProtected):

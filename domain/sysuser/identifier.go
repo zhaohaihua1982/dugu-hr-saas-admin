@@ -54,6 +54,20 @@ func ResolveIdentifier(ctx context.Context, raw string, finder interface {
 	return nil, nil // ③ 都未命中
 }
 
+// PlausibleIdentifier 登录入口对标识的快筛：非空、≤64（表列宽）、无控制字符。
+// 不做格式正向断言（账号规则各异）——显然非法的请求认真管，其余交管线。
+func PlausibleIdentifier(raw string) bool {
+	if raw == "" || len(raw) > 64 {
+		return false
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < 0x20 || raw[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // MaskIdentifier 输入标识脱敏（写入登录日志 identifier_mask，docs §3.2）。
 // 形似手机号按 138****8000；其余按 ad***in 风格（首2+***+尾2，过短给 *）。
 func MaskIdentifier(raw string) string {
