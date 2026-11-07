@@ -62,6 +62,8 @@ func CodeOf(err error) int {
 		return code.InvalidParams
 	case errors.Is(err, appsysuser.ErrSuperAdminProtected):
 		return code.ErrorSuperAdminProtected
+	case errors.Is(err, appsysuser.ErrSelfOperation):
+		return code.ErrorSelfOperation
 	}
 	return code.ErrorDatabase
 }

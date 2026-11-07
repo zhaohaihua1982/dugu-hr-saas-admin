@@ -28,6 +28,7 @@ const (
 	ErrorWeakPassword        = 30024 // 密码不满足策略
 	ErrorBadIdentifierFormat = 30025 // 账号/手机号格式不合法
 	ErrorSuperAdminProtected = 30026 // 超管账号受保护，禁止该操作
+	ErrorSelfOperation       = 30027 // 不能对当前登录账号自身执行停用/启用、解锁等操作
 
 	// ---------- 数据库（40001） ----------
 	ErrorDatabase = 40001

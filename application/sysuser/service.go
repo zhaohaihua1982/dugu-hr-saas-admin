@@ -89,6 +89,10 @@ type ResetPasswordReq struct {
 // ErrSuperAdminProtected 超管账号受保护（docs §8.3，映射 code.ErrorSuperAdminProtected）。
 var ErrSuperAdminProtected = fmt.Errorf("super admin protected")
 
+// ErrSelfOperation 禁止对自己账号执行停用/启用、锁定/解锁类操作。
+// 语义：这类“生命线”操作（管理员 自干扰防线）须由他人执行/协作。
+var ErrSelfOperation = fmt.Errorf("sysuser: cannot operate self")
+
 // ---------- 用例 ----------
 
 // Service 账号管理用例。
@@ -177,6 +181,10 @@ func (s *Service) Update(ctx context.Context, targetID int64, req *UpdateSysUser
 	if err := s.protectSuper(ctx, u, opUID); err != nil {
 		return nil, err
 	}
+	// 禁止自我停用/启用（管理员自干扰防线：不能切自己的状态水龙头）
+	if req.Status != nil && u.ID == opUID {
+		return nil, ErrSelfOperation
+	}
 	// 停用超管在任何情况下都禁止（防“通道故障导致平台失管”的反面对称）
 	if req.Status != nil && *req.Status != sysuser.StatusActive && u.IsSuper() {
 		return nil, ErrSuperAdminProtected
@@ -223,6 +231,10 @@ func (s *Service) Delete(ctx context.Context, targetID int64, opUID int64, p typ
 	if u.IsSuper() {
 		return ErrSuperAdminProtected
 	}
+	// 禁止自我删除（是停用语义；寻找旁路＝放弃本条防线，补一条关键闭环）
+	if u.ID == opUID {
+		return ErrSelfOperation
+	}
 	if err := s.users.SoftDelete(ctx, u.ID, now); err != nil {
 		return err
 	}
@@ -240,6 +252,10 @@ func (s *Service) Unlock(ctx context.Context, targetID int64, opUID int64, p typ
 	u, err := s.load(ctx, targetID)
 	if err != nil {
 		return err
+	}
+	// 禁止自我解冻/锁定操作（冻结/解冻须由他人执行）
+	if u.ID == opUID {
+		return ErrSelfOperation
 	}
 	if err := s.users.Unlock(ctx, u.ID); err != nil {
 		return err

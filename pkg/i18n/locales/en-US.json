@@ -22,6 +22,7 @@
   "30024": "Password must be at least 10 characters with 2 character classes",
   "30025": "Invalid account or mobile number format",
   "30026": "Built-in super admin account is protected, operation denied",
+  "30027": "You cannot perform this operation on your own account",
 
   "40001": "Database error, please retry",
 
