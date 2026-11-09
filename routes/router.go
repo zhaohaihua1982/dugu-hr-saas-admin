@@ -71,6 +71,9 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 	{
 		auth := admin.Group("auth")
 		{
+			// 图形码双开 GET/POST：智障地址栏只能发 GET（如 <img>/地址栏直访）；
+			// 一次性存储/限流不受影响，签发是“免费资源”语义。
+			auth.GET("captcha", authAPI.GetCaptcha)
 			auth.POST("captcha", authAPI.GetCaptcha)
 			auth.POST("sms/send", authAPI.SendSms)
 			auth.POST("login/password", authAPI.LoginPassword)
