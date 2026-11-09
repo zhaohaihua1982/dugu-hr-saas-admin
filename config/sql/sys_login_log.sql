@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS `sys_login_log` (
     `id`              BIGINT        NOT NULL COMMENT '雪花ID，应用侧生成',
     `user_id`         BIGINT        NOT NULL DEFAULT 0 COMMENT '解析失败时为 0',
-    `identifier_mask` VARCHAR(64)   NOT NULL COMMENT '脱敏后的输入：ad***in / 138****8000',
+    `identifier_mask` VARCHAR(64)   NOT NULL COMMENT '登录标识：账号原样 / 手机脱敏(138****8000)，v1.2',
     `login_type`      VARCHAR(16)   NOT NULL COMMENT 'PASSWORD / SMS',
     `ident_via`       VARCHAR(16)   NOT NULL DEFAULT '' COMMENT '命中的标识：USERNAME / MOBILE',
     `success`         TINYINT(1)    NOT NULL,
@@ -14,5 +14,6 @@ CREATE TABLE IF NOT EXISTS `sys_login_log` (
     PRIMARY KEY (`id`),
     KEY `idx_log_user` (`user_id`, `created_at`),
     KEY `idx_log_time` (`created_at`),
-    KEY `idx_log_ip`   (`ip`, `created_at`)
+    KEY `idx_log_ip`   (`ip`, `created_at`),
+    KEY `idx_log_identifier` (`identifier_mask`, `created_at`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;

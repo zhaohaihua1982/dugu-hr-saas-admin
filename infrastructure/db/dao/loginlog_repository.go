@@ -46,6 +46,10 @@ func (r *LoginLogRepository) Query(ctx context.Context, q loginlog.Query) (*logi
 	if q.IP != "" {
 		d = d.Where("ip = ?", q.IP)
 	}
+	if q.IdentifierMask != "" {
+		// 命中 idx_log_identifier(identifier_mask, created_at)
+		d = d.Where("identifier_mask = ?", q.IdentifierMask)
+	}
 	if q.Success != nil {
 		d = d.Where("success = ?", *q.Success)
 	}

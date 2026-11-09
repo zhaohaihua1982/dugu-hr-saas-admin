@@ -15,6 +15,9 @@ import (
 )
 
 // Migrate 幂等执行 config/sql 中的 DDL（docs §11 P0“两张表+迁移”）。
+// v1.2 起包含**对已建表的幂等索引增量**：CREATE TABLE IF NOT EXISTS 不会给
+// 已存在表补索引，因此在 DDL 执行后对 indexSpecs 逐个先查 information_schema
+// 再 CREATE INDEX（MySQL 不支持 CREATE INDEX IF NOT EXISTS 语法）。
 func (d *DB) Migrate(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -26,6 +29,38 @@ func (d *DB) Migrate(ctx context.Context) error {
 		if err := d.WithContext(ctx).Exec(sql).Error; err != nil {
 			return fmt.Errorf("执行迁移 %s: %w", f, err)
 		}
+	}
+	return d.ensureIndexes(ctx)
+}
+
+// indexSpecs 待保证的增量索引。新增索引在此登记（表/索引名/列清单）。
+var indexSpecs = []struct {
+	table  string
+	name   string
+	column string
+}{
+	{table: "sys_login_log", name: "idx_log_identifier", column: "identifier_mask, created_at"},
+}
+
+// ensureIndexes 幂等保证增量索引存在。
+func (d *DB) ensureIndexes(ctx context.Context) error {
+	for _, spec := range indexSpecs {
+		var cnt int64
+		check := d.WithContext(ctx).Raw(
+			`SELECT COUNT(*) FROM information_schema.statistics
+			  WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?`,
+			spec.table, spec.name).Scan(&cnt)
+		if check.Error != nil {
+			return fmt.Errorf("检查索引 %s.%s: %w", spec.table, spec.name, check.Error)
+		}
+		if cnt > 0 {
+			continue
+		}
+		stmt := fmt.Sprintf("CREATE INDEX `%s` ON `%s` (%s)", spec.name, spec.table, spec.column)
+		if err := d.WithContext(ctx).Exec(stmt).Error; err != nil {
+			return fmt.Errorf("创建索引 %s.%s: %w", spec.table, spec.name, err)
+		}
+		slog.Info("迁移增量索引已创建", "table", spec.table, "index", spec.name)
 	}
 	return nil
 }

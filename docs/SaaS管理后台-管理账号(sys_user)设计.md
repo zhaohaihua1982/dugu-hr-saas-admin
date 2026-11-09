@@ -331,6 +331,15 @@ POST /api/v1/admin/sys-users/batch-unfreeze   { "ids": ["...","..."] }
 | 幂等 | 冻结已冻结者=顺延锁定期（`locked_until` 重置到新时刻）；解冻非冻结者=无害（清计数仍执行） |
 | 审计 | 每条成功项单独审计 `sysuser.freeze/unfreeze`（操作者、目标、时长/到期、来源 IP），§8.3“强制审计”的延伸 |
 
+### 13.3 登录日志标识列 v1.2（账号原样、手机脱敏）
+
+| 项 | 规则 |
+|---|---|
+| 落库 | `identifier_mask`：**账号原样**（账号非 PII，支持精确回查与审计关联）；手机号归一化后 `138****8000`（PII 原则不变） |
+| 查询 | `GET /login-logs?identifier=<原始输入>`：应用层与落库同规则转换后**精确匹配**（命中索引 `idx_log_identifier(identifier_mask, created_at)`，v1.2 执行幂等增量迁移补建）；兼容直接传旧 mask |
+| 存量 | v1.1 前写入的旧 mask（`ad***in`）不可逆推原账号，保留原样；用 `?identifier=ad***in` 可查旧数据 |
+| 响应 | `identifier_mask` 字段对账号返回原样字符串 |
+
 ### 13.2 其他已上线增量（登记以免文档与实现 diff）
 
 - **鉴权**：全局统一过滤 AuthGuard（安全默认 deny）+ 白名单 `PublicPaths`（/healthz、auth/captcha、auth/sms/send、auth/login/*）；logout/me 与全部管理面须登录。

@@ -136,7 +136,7 @@ func (s *Service) LoginPassword(ctx context.Context, req *LoginPasswordReq, p ty
 	if err != nil {
 		return nil, err
 	}
-	idMask := sysuser.MaskIdentifier(ident)
+	idMask := sysuser.LogIdentifier(ident) // v1.2：账号原样、手机脱敏（docs §3.2）
 
 	// ② 图形码校验（连续失败 3 次后必带，docs §8.7）
 	if err := s.requireCaptcha(ctx, u, idMask, p, req.CaptchaID, req.CaptchaCode); err != nil {

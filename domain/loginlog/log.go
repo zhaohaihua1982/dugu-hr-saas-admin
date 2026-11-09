@@ -62,9 +62,12 @@ type Query struct {
 	PageSize int
 	UserID   int64
 	IP       string
-	Success  *bool
-	TimeFrom time.Time
-	TimeTo   time.Time
+	// IdentifierMask 脱敏后标识的精确匹配。应用层把用户原始输入同规则脱敏后传入，
+	// 调用方无需感知脱敏实现（命中 idx_log_identifier）。
+	IdentifierMask string
+	Success        *bool
+	TimeFrom       time.Time
+	TimeTo         time.Time
 }
 
 // Result 查询结果。

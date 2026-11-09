@@ -68,7 +68,22 @@ func PlausibleIdentifier(raw string) bool {
 	return true
 }
 
-// MaskIdentifier 输入标识脱敏（写入登录日志 identifier_mask，docs §3.2）。
+// LogIdentifier 登录日志 identifier 列的落库值（docs §3.2 v1.2 调整）：
+//   - 账号 → **原样**（账号非 PII，原样才能精确回查与审计关联）；
+//   - 形似手机号 → 归一化后 138****8000（手机号是 PII，绝不落原文）。
+//
+// 调用方输入即登录请求里的原始 identifier。
+func LogIdentifier(raw string) string {
+	if LooksLikeMobile(raw) {
+		if n, err := NormalizeMobile(raw); err == nil {
+			return MaskMobile(n)
+		}
+	}
+	return raw
+}
+
+// MaskIdentifier 保留用于“标识面包粉”类键（防爆破计数器的 key 分桶），
+// 登录日志落库不再使用（v1.2 起账号原样）。
 // 形似手机号按 138****8000；其余按 ad***in 风格（首2+***+尾2，过短给 *）。
 func MaskIdentifier(raw string) string {
 	if LooksLikeMobile(raw) {

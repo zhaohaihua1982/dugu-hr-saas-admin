@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"dugu-hr-saas-admin/domain/loginlog"
+	"dugu-hr-saas-admin/domain/sysuser"
 )
 
 // ---------- 用例输入/输出对象 ----------
@@ -32,9 +34,12 @@ type ListLoginLogsReq struct {
 	PageSize int    `form:"page_size" binding:"omitempty,min=1,max=100"`
 	UserID   int64  `form:"user_id"`
 	IP       string `form:"ip"`
-	Success  *bool  `form:"success"`
-	StartAt  string `form:"start_at"`
-	EndAt    string `form:"end_at"`
+	// Identifier 登录标识查询：调用方传**原始输入**（账号或手机号均可，
+	// 也兼容直接传已脱敏的 mask），应用层按与入库同规则脱敏后精确匹配。
+	Identifier string `form:"identifier" binding:"omitempty,max=128"`
+	Success    *bool  `form:"success"`
+	StartAt    string `form:"start_at"` // YYYY-MM-DD（含当日）
+	EndAt      string `form:"end_at"`
 }
 
 // ListLoginLogsResp 登录日志响应。
@@ -69,9 +74,11 @@ func (s *Service) List(ctx context.Context, req *ListLoginLogsReq) (*ListLoginLo
 		PageSize: req.PageSize,
 		UserID:   req.UserID,
 		IP:       req.IP,
-		Success:  req.Success,
-		TimeFrom: from,
-		TimeTo:   to,
+		// 与入库同一脱敏规则（docs §3.2“存脱敏标识”），精确命中 idx_log_identifier
+		IdentifierMask: maskQueryIdentifier(req.Identifier),
+		Success:        req.Success,
+		TimeFrom:       from,
+		TimeTo:         to,
 	})
 	if err != nil {
 		return nil, err
@@ -93,6 +100,24 @@ func (s *Service) List(ctx context.Context, req *ListLoginLogsReq) (*ListLoginLo
 		})
 	}
 	return &ListLoginLogsResp{Items: items, Total: res.Total, Page: res.Page, PageSize: res.PageSize}, nil
+}
+
+const maskWildcard = "***"
+
+// maskQueryIdentifier 查询标识 → 入库值（与落库同规则，v1.2）：
+//   - 形似手机号 → 138****8000；
+//   - 其余（账号）→ **原样**（与登录日志新规一致）；历史 mask（如 ad***in）说明见 docs §3.2 注。
+//
+// 返回空串表示不过滤。
+func maskQueryIdentifier(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, maskWildcard) {
+		return raw // 直接给了历史 mask（兼容老数据查询）
+	}
+	return sysuser.LogIdentifier(raw)
 }
 
 // parseRange 解析 YYYY-MM-DD（空串不限）。

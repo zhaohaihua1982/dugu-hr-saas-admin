@@ -29,7 +29,7 @@ type SysUser struct {
 // TableName 表名。
 func (SysUser) TableName() string { return "sys_user" }
 
-// SysLoginLog sys_login_log 表对象（docs §3.2）。
+// SysLoginLog sys_login_log 表对象（docs §3.2；v1.2：identifier 账号原样/手机脱敏）。
 type SysLoginLog struct {
 	ID             int64     `gorm:"primaryKey;column:id"`
 	UserID         int64     `gorm:"column:user_id"`
