@@ -32,17 +32,22 @@ type UserView struct {
 	Mobile    string `json:"mobile"`
 	Status    int    `json:"status"`
 	CreatedAt string `json:"created_at"`
+	// IsCurrent 是否陈“当前登录账号本人”。
+	// 前端用途：该行灰掉 checkbox，隐藏 停用/启用/冻结 等自我操作按钮
+	//（后端同样拒之（30027），双保险）。
+	IsCurrent bool `json:"is_current"`
 }
 
-// toView 聚合 → 展示视图（包内私有；auth 域经 ToView 复用）。
-func toView(u *sysuser.User) UserView {
+// toView 聚合 → 展示视图（isCurrent：该行是否即当前登录人自身）。
+func toView(u *sysuser.User, isCurrent bool) UserView {
 	v := UserView{
-		ID:       strconv.FormatInt(u.ID, 10),
-		Username: u.Username,
-		Name:     u.Name,
-		Email:    u.Email,
-		Mobile:   u.Mobile.Mask,
-		Status:   int(u.Status),
+		ID:        strconv.FormatInt(u.ID, 10),
+		Username:  u.Username,
+		Name:      u.Name,
+		Email:     u.Email,
+		Mobile:    u.Mobile.Mask,
+		Status:    int(u.Status),
+		IsCurrent: isCurrent,
 	}
 	if !u.CreatedAt.IsZero() {
 		v.CreatedAt = u.CreatedAt.Format(time.DateTime)
@@ -50,8 +55,8 @@ func toView(u *sysuser.User) UserView {
 	return v
 }
 
-// ToView 导出视图转换（认证域登录响应/Me 复用，避免同层重复定义）。
-func ToView(u *sysuser.User) UserView { return toView(u) }
+// ToView 导出视图转换（认证域登录响应/Me 复用——登录态/当前用户恒为本人）。
+func ToView(u *sysuser.User) UserView { return toView(u, true) }
 
 // CreateSysUserReq 创建管理账号（username 禁 11 位纯数字；密码须 ≥10 位含两类字符）。
 type CreateSysUserReq struct {
@@ -159,7 +164,9 @@ func NewService(
 }
 
 // List 账号列表（手机只回 mask，永不解密）。
-func (s *Service) List(ctx context.Context, req *SysUserListReq) (*SysUserListResp, error) {
+// opUID：每一行标注 is_current（当前登录人自身）——前端据此灰掉 checkbox 并隐藏
+// 停用/启用等按钮（后端同样拒绝：30027）。
+func (s *Service) List(ctx context.Context, req *SysUserListReq, opUID int64) (*SysUserListResp, error) {
 	res, err := s.users.List(ctx, sysuser.ListQuery{
 		Page: req.Page, PageSize: req.PageSize, Keyword: req.Keyword, Status: req.Status,
 	})
@@ -168,7 +175,7 @@ func (s *Service) List(ctx context.Context, req *SysUserListReq) (*SysUserListRe
 	}
 	items := make([]UserView, 0, len(res.Items))
 	for i := range res.Items {
-		items = append(items, toView(&res.Items[i]))
+		items = append(items, toView(&res.Items[i], res.Items[i].ID == opUID))
 	}
 	return &SysUserListResp{Items: items, Total: res.Total, Page: res.Page, PageSize: res.PageSize}, nil
 }
@@ -208,7 +215,7 @@ func (s *Service) Create(ctx context.Context, req *CreateSysUserReq, opUID int64
 	s.audit("sysuser.create", opUID, p, map[string]interface{}{
 		"target_id": u.ID, "target_username": u.Username, "target_mobile": u.Mobile.Mask,
 	})
-	v := toView(u)
+	v := toView(u, false)
 	return &v, nil
 }
 
@@ -258,7 +265,7 @@ func (s *Service) Update(ctx context.Context, targetID int64, req *UpdateSysUser
 	s.audit("sysuser.update", opUID, p, map[string]interface{}{
 		"target_id": u.ID, "set_status": req.Status, "set_mobile": req.Mobile != "",
 	})
-	v := toView(updated)
+	v := toView(updated, updated.ID == opUID)
 	return &v, nil
 }
 

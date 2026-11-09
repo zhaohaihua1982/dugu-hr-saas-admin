@@ -34,7 +34,7 @@ func (p *SysUserAPI) List(ctx *gin.Context) {
 		ErrorResponse(ctx, err)
 		return
 	}
-	resp, err := p.users.List(ctx.Request.Context(), &req)
+	resp, err := p.users.List(ctx.Request.Context(), &req, ctx.GetInt64(keyUID))
 	if err != nil {
 		ErrorResponse(ctx, err)
 		return
