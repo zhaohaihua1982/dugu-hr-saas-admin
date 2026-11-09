@@ -1,7 +1,8 @@
 # SaaS 管理后台 · 管理账号（sys_user）设计
 
-> 版本 v1.0 · 范围：**仅管理账号体系**（平台运营方自己的管理后台）
-> 创建：2026-11-06 · 最后修改：2026-11-06
+> 版本 v1.1 · 范围：**仅管理账号体系**（平台运营方自己的管理后台）
+> 创建：2026-11-06 · 最后修改：2026-11-09
+> v1.1 增量：见 §13（批量冻结/解冻等已上线增量，实现与文档保持同步）
 > 租户账号（`hr_account`）本次不设计，见 §12。
 
 ---
@@ -261,7 +262,9 @@ GET    /api/v1/admin/sys-users              列表（手机返回 mask）
 POST   /api/v1/admin/sys-users              创建
 PUT    /api/v1/admin/sys-users/{id}         修改
 DELETE /api/v1/admin/sys-users/{id}         停用（软删）
-POST   /api/v1/admin/sys-users/{id}/unlock  解锁
+POST   /api/v1/admin/sys-users/batch-freeze      批量冻结（v1.1，契约见 §13.1）
+POST   /api/v1/admin/sys-users/batch-unfreeze    批量解冻（v1.1，契约见 §13.1）
+（v1.1 移除：POST /sys-users/{id}/unlock，由 batch-unfreeze 替代）
 POST   /api/v1/admin/sys-users/{id}/reset-password   重置密码（强审计）
 GET    /api/v1/admin/login-logs             登录日志查询
 ```
@@ -307,3 +310,44 @@ P0 的验收标准：**一个初始超管账号能登录，输错 5 次会被锁
 1. **它是一套独立的表和独立的路由**，不是 `sys_user` 加 `tenant_id`。两者的生命周期、安全策略、规模都不同。
 2. 之前讨论过的一批结论（标识与账号分离、多标识唯一键设计、SSO 只负责换 user_id、密码策略取最严等）属于租户侧问题，等做 `hr_account` 时再启用。
 3. 两套体系之间的唯一合法通道是"平台员工代客操作"这类**显式授权功能**（要审计、要限时），绝不是共享登录代码或共享表。
+## 13. v1.1 已上线增量（与实现同步，2026-11-09）
+
+### 13.1 批量冻结 / 批量解冻
+
+```
+POST /api/v1/admin/sys-users/batch-freeze     { "ids": ["...","..."], "minutes": 30 }
+POST /api/v1/admin/sys-users/batch-unfreeze   { "ids": ["...","..."] }
+```
+
+| 项 | 规则 |
+|---|---|
+| ids | 字符串数组，≤100 条；单条解析失败按 `30025` 逐项返回，不打断批 |
+| minutes | 仅 batch-freeze：1~10080，缺省 60 分钟，超上限收敛 |
+| 响应 | `{items:[{id,success,code?}],succeeded,failed}`；**逐项独立**，部分失败不影响已成功项 |
+| 冻结语义 | `locked_until = now + minutes` + `status=3`（DB 权威）+ Redis 锁标记（加速层）+ 全端秒踢（§7）；“Redis 故障回落 DB”规则同 §6 |
+| 解冻语义 | 清 `fail_count`/`locked_until`、状态回 1、清 Redis 计数与锁标记 |
+| 与自动锁定的关系 | §6 的“连错 5 次锁 15 分钟”是自动安全锁定；人工冻结默认 60 分钟，二者并行（复用 `locked_until` 字段），不混用语义 |
+| 管理红线 | 超管（admin）不可被任何人冻结（§8.3）；冻结/解冻不可对“当前登录人自己”执行——逐项返回 `30026`/`30027` |
+| 幂等 | 冻结已冻结者=顺延锁定期（`locked_until` 重置到新时刻）；解冻非冻结者=无害（清计数仍执行） |
+| 审计 | 每条成功项单独审计 `sysuser.freeze/unfreeze`（操作者、目标、时长/到期、来源 IP），§8.3“强制审计”的延伸 |
+
+### 13.2 其他已上线增量（登记以免文档与实现 diff）
+
+- **鉴权**：全局统一过滤 AuthGuard（安全默认 deny）+ 白名单 `PublicPaths`（/healthz、auth/captcha、auth/sms/send、auth/login/*）；logout/me 与全部管理面须登录。
+- **验证码**：GET/POST 双开（地址栏/`<img>` 场景）；签发防刷：单 IP 10/分钟、60/小时。
+- **登录输入快筛**：密码 <6 位、标识空/超长/控制字符、短信码非 6 位、图形码答案非 5 位——不达标直接打回，不消耗 bcrypt/DB/Redis（对存在/不存在账号同等拒绝，无枚举信号）。
+- **自操作防线**：停用/启用、删除、锁定/解锁的目标=当前登录人 → 拒绝（业务码 `30027`）。
+- **is_current**：sys_user 列表/登录/me 视图逐行标注“是否当前登录人”（前端灰 checkbox、隐藏自我操作按钮；后端 30027 兜底）。
+- **语言中立响应合同**：雪花 ID 字符串输出（约 2^53 边界）；时间为自格式化字符串；校验失败只给非法字段名数组（不泄漏后端结构名/校验 tag）；404/405 JSON 兜底（回显 method/path）。
+- **安全修复**：`SetTrustedProxies(nil)` 修复伪造 `X-Forwarded-For` 绕过 IP 限流的漏洞；基础安全响应头（nosniff/DENY/no-store）。
+
+## 14. 边界情况补充（v1.1）
+
+| 情况 | 处理 |
+|---|---|
+| 批量冻结请求含“自己” | 该条返回 `30027`，其余条目正常处理（部分成功语义） |
+| 批量冻结含“超管 admin” | 该条返回 `30026`，其余条目正常处理 |
+| 冻结 minutes 缺省/越界 | 缺省 60 分钟；>10080 收敛到上限，不报错 |
+| 对已冻结用户再次冻结 | 顺延：`locked_until` 重置到新时刻 |
+| 解冻非冻结状态用户 | 无害：清计数执行，状态回 1 |
+
