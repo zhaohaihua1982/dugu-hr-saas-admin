@@ -43,7 +43,11 @@ func NewLoginLogAPI(logs *apploginlog.Service) *LoginLogAPI { return &LoginLogAP
 func ErrorResponse(ctx *gin.Context, err error) {
 	var ve validator.ValidationErrors
 	if errors.As(err, &ve) {
-		ctl.RespError(ctx, err, code.InvalidParams, ve.Error())
+		fields := make([]string, 0, len(ve))
+		for _, e := range ve {
+			fields = append(fields, e.Field())
+		}
+		ctl.RespError(ctx, err, code.InvalidParams, fields)
 		return
 	}
 	ctl.RespError(ctx, err, application.CodeOf(err), nil)

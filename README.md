@@ -80,6 +80,24 @@ GET    /healthz                             存活探针
 `/healthz`、`auth/captcha`、`auth/sms/send`、`auth/login/*`；
 `logout/me` 及全部管理面接口仍需登录（见 `routes.PublicPaths`）。
 
+## 响应合同（语言中立约定，给 Java/前端对接）
+
+所有接口 HTTP 恒 200，业务语义在 body：`{status, msg, data}`。
+
+| 项 | 约定 | 原因 |
+|---|---|---|
+| 雪花 ID | **字符串**输出（`"id":"2118618..."`） | int64 超过 JS `2^53`；Go/Java 的 JSON 库对大整型行为不统一 |
+| 时间 | `"yyyy-MM-dd HH:mm:ss"` 字符串 | 不经手 Go `time.Time` / Java `Instant` 的默认序列化差异 |
+| 手机号 | mask（`138****0000`），永无明文/密文 | 设计文档 §3.3① |
+| 枚举 | 大写字符串（`PASSWORD/SMS/USERNAME/Locked...`） | 不暴露语言整型枚举 |
+| 数值 | 除 ID 外均为 ≤2^53 的原生数字（expires_in、remaining_seconds 等） | 前端 JS 安全 |
+| 校验失败（400） | `data` 为**非法字段名数组**（camelCase），msg 固定“参数错误” | 不泄漏 Go 结构名/校验 tag/实现细节 |
+| 404/405 兜底 | `data` 回显 `{method, path}` | 一次定位方法错/路径错 |
+| token | 标准紧凑 JWS（HS256），载荷仅 `uid/jti` | 任何语言的 JWT 库可直接解析 |
+
+> `data` 按接口语义各异（对象/字符串/数组），字段名稳定 camelCase；
+> Java 端建议先判 `status`，再按接口契约取 `data`。
+
 ## DDD 关键约定
 
 - **domain 零依赖**：聚合/端口无 gin、gorm、redis、config 依赖；领域不读全局时钟，

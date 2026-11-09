@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"dugu-hr-saas-admin/application/types"
@@ -17,8 +18,12 @@ import (
 // ---------- 用例输出/输入对象（接口层直接绑定） ----------
 
 // UserView 对外展示视图（手机只用 mask，永不解密——docs §3.3①）。
+// 语言中立约定：
+//   - id 用字符串输出——雪花 int64 超过 JS Number.MAX_SAFE_INTEGER（2^53），
+//     Java 端也存在各 JSON 库对大 long 的缺省行为差异，统一字符串最稳；
+//   - 时间为 "yyyy-MM-dd HH:mm:ss" 字符串（我们自己格式化，不经手 Go time.Time）。
 type UserView struct {
-	ID        int64  `json:"id"`
+	ID        string `json:"id"`
 	Username  string `json:"username"`
 	Name      string `json:"name"`
 	Email     string `json:"email"`
@@ -30,7 +35,7 @@ type UserView struct {
 // toView 聚合 → 展示视图（包内私有；auth 域经 ToView 复用）。
 func toView(u *sysuser.User) UserView {
 	v := UserView{
-		ID:       u.ID,
+		ID:       strconv.FormatInt(u.ID, 10),
 		Username: u.Username,
 		Name:     u.Name,
 		Email:    u.Email,

@@ -4,6 +4,7 @@ package loginlog
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"dugu-hr-saas-admin/domain/loginlog"
@@ -11,10 +12,10 @@ import (
 
 // ---------- 用例输入/输出对象 ----------
 
-// LoginLogResp 登录日志条目。
+// LoginLogResp 登录日志条目（id/user_id 用字符串：雪花 ID 超出 JS 安全整数，见 UserView 注释）。
 type LoginLogResp struct {
-	ID             int64               `json:"id"`
-	UserID         int64               `json:"user_id"`
+	ID             string              `json:"id"`
+	UserID         string              `json:"user_id"`
 	IdentifierMask string              `json:"identifier_mask"`
 	Type           string              `json:"login_type"`
 	Via            string              `json:"ident_via"`
@@ -79,8 +80,8 @@ func (s *Service) List(ctx context.Context, req *ListLoginLogsReq) (*ListLoginLo
 	for i := range res.Items {
 		l := &res.Items[i]
 		items = append(items, LoginLogResp{
-			ID:             l.ID,
-			UserID:         l.UserID,
+			ID:             strconv.FormatInt(l.ID, 10),
+			UserID:         strconv.FormatInt(l.UserID, 10),
 			IdentifierMask: l.IdentifierMask,
 			Type:           string(l.Type),
 			Via:            string(l.Via),
