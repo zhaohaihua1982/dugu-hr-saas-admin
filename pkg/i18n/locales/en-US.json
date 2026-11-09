@@ -24,6 +24,8 @@
   "30026": "Built-in super admin account is protected, operation denied",
   "30027": "You cannot perform this operation on your own account",
 
+  "404": "Endpoint not found or wrong HTTP method (POST/GET are strictly separated)",
+
   "40001": "Database error, please retry",
 
   "sms.sent": "Sent"

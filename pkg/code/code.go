@@ -30,6 +30,9 @@ const (
 	ErrorSuperAdminProtected = 30026 // 超管账号受保护，禁止该操作
 	ErrorSelfOperation       = 30027 // 不能对当前登录账号自身执行停用/启用、解锁等操作
 
+	// ---------- 路由兜底 ----------
+	ErrorNotFoundNoRoute = 404 // 接口不存在或请求方式不对（GET 访问了 POST 接口等）
+
 	// ---------- 数据库（40001） ----------
 	ErrorDatabase = 40001
 )

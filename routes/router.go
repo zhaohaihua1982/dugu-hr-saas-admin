@@ -14,6 +14,8 @@ import (
 	"dugu-hr-saas-admin/application"
 	"dugu-hr-saas-admin/domain/authn"
 	"dugu-hr-saas-admin/middleware"
+	"dugu-hr-saas-admin/pkg/code"
+	"dugu-hr-saas-admin/pkg/utils/ctl"
 )
 
 // PublicPaths 白名单：未登录即可访问。
@@ -37,6 +39,23 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 	r.Use(gin.Recovery(), middleware.Cors())
 	// 全局统一鉴权过滤：白名单外的所有请求必须携带有效会话
 	r.Use(middleware.AuthGuard(verifier, sessions, middleware.NewWhitelist(PublicPaths...)))
+
+	// 未注册路由/方法不匹配的兜底：返回 JSON 提示而非 gin 默认的纯文本 404，
+	// 帮助前端把“路径拼错/ METHOD 用错（如 GET 访问 POST 接口）”一次定位。
+	r.NoRoute(func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status": code.ErrorNotFoundNoRoute,
+			"msg":    ctl.MsgOf(c, code.ErrorNotFoundNoRoute),
+			"data":   gin.H{"method": c.Request.Method, "path": c.Request.URL.Path},
+		})
+	})
+	r.NoMethod(func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status": code.ErrorNotFoundNoRoute,
+			"msg":    ctl.MsgOf(c, code.ErrorNotFoundNoRoute),
+			"data":   gin.H{"method": c.Request.Method, "path": c.Request.URL.Path},
+		})
+	})
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
