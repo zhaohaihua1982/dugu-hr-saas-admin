@@ -63,9 +63,15 @@ type Service struct {
 // NewService 构造。
 func NewService(logs loginlog.Repository) *Service { return &Service{logs} }
 
-// List 日志查询（标识已按 docs §3.2 脱敏入库，不经手明文）。
+// List 日志查询（标识已按 docs §3.2 v1.2 规则落库，不经手明文）。
+// 默认时间窗口：**start/end 都不传时，只查“今天”**（当天 00:00:00 ~ 23:59:59.999）。
 func (s *Service) List(ctx context.Context, req *ListLoginLogsReq) (*ListLoginLogsResp, error) {
-	from, to, err := parseRange(req.StartAt, req.EndAt)
+	startAt, endAt := req.StartAt, req.EndAt
+	if startAt == "" && endAt == "" { // 默认窗口：只查当天
+		today := time.Now().Format(timeFmtDate)
+		startAt, endAt = today, today
+	}
+	from, to, err := parseRange(startAt, endAt)
 	if err != nil {
 		return nil, err
 	}
@@ -120,22 +126,50 @@ func maskQueryIdentifier(raw string) string {
 	return sysuser.LogIdentifier(raw)
 }
 
-// parseRange 解析 YYYY-MM-DD（空串不限）。
+// 时间入参格式（docs §13.3 v1.2）：YYYY-MM-DD HH:mm:ss 或纯日期（兼容）。
+// **秒级精度，不收毫秒**：Go 的 time.Parse 会隐式接受小数秒（即使布局未写），
+// 若不显式拒绝，毫秒参数将悄悄改变过滤口径——与“响应不携带语言惯性”同一审计口径，
+// 入参侧同样拒绝 Go 的隐式行为（见 parseOne 的点号守卫）。
+const (
+	timeFmtDateTime = "2006-01-02 15:04:05"
+	timeFmtDate     = "2006-01-02"
+)
+
+// parseRange 解析时间范围（空串不限）。
+//   - start 为纯日期 → 当日 00:00:00 起；
+//   - end   为纯日期 → **含末日全天**（+24h-1ms 截止）；带时分秒则精确到秒。
 func parseRange(startAt, endAt string) (time.Time, time.Time, error) {
 	var from, to time.Time
+	// parseOne 只接受秒级精度的两种格式；任何带小数点的值一律拒绝
+	//（防 time.Parse 隐式解析毫秒/微秒尾巴，docs 响应合同“不收毫秒”）。
+	parseOne := func(v string) (time.Time, bool) {
+		if strings.Contains(v, ".") {
+			return time.Time{}, false
+		}
+		for _, f := range []string{timeFmtDateTime, timeFmtDate} {
+			if t, err := time.ParseInLocation(f, v, time.Local); err == nil {
+				return t, true
+			}
+		}
+		return time.Time{}, false
+	}
 	if startAt != "" {
-		t, err := time.ParseInLocation("2006-01-02", startAt, time.Local)
-		if err != nil {
+		t, ok := parseOne(startAt)
+		if !ok {
 			return from, to, ErrBadRange
 		}
 		from = t
 	}
 	if endAt != "" {
-		t, err := time.ParseInLocation("2006-01-02", endAt, time.Local)
-		if err != nil {
+		t, ok := parseOne(endAt)
+		if !ok {
 			return from, to, ErrBadRange
 		}
-		to = t.Add(24*time.Hour - time.Millisecond) // 含当日
+		if len(endAt) == 10 { // 纯日期 → 含末日全天（23:59:59.999 截止属于内部实现，对入参仍不收毫秒）
+			to = t.Add(24*time.Hour - time.Millisecond)
+		} else {
+			to = t
+		}
 	}
 	return from, to, nil
 }
