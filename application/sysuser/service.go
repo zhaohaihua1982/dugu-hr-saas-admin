@@ -4,6 +4,7 @@ package sysuser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -12,7 +13,8 @@ import (
 	"dugu-hr-saas-admin/application/types"
 	authn "dugu-hr-saas-admin/domain/authn"
 	"dugu-hr-saas-admin/domain/sysuser"
-	"dugu-hr-saas-admin/pkg/utils/log"
+	"dugu-hr-saas-admin/pkg/code"
+	dlog "dugu-hr-saas-admin/pkg/utils/log"
 )
 
 // ---------- 用例输出/输入对象（接口层直接绑定） ----------
@@ -87,6 +89,40 @@ type SysUserListResp struct {
 // ResetPasswordReq 重置密码（docs §9：强审计）。
 type ResetPasswordReq struct {
 	Password string `json:"password" binding:"required,max=64"`
+}
+
+// ---------- 批量冻结/解冻（单条接口由批量接口替代） ----------
+
+// Freezer 时长常量：人工冻结默认 60 分钟、可配 1~10080 分钟。
+// docs 的 15 分钟是“连错 5 次”自动锁定的语义，二者不混用。
+const (
+	DefaultFreezeMinutes = 60
+	MaxFreezeMinutes     = 10080
+)
+
+// BatchFreezeReq 批量冻结（ids 一律字符串——响应合同的 ID 约定）。
+type BatchFreezeReq struct {
+	IDs     []string `json:"ids" binding:"required,min=1,max=100"`
+	Minutes int      `json:"minutes" binding:"omitempty,min=1"`
+}
+
+// BatchUnlockReq 批量解冻。
+type BatchUnlockReq struct {
+	IDs []string `json:"ids" binding:"required,min=1,max=100"`
+}
+
+// BatchItemResult 逐项结果：独立处理，部分失败不影响已成功项。
+type BatchItemResult struct {
+	ID      string `json:"id"`
+	Success bool   `json:"success"`
+	Code    int    `json:"code,omitempty"` // 失败时为该条业务码（pkg/code）
+}
+
+// BatchResp 批量响应（succeeded+failed = len(items)）。
+type BatchResp struct {
+	Items     []BatchItemResult `json:"items"`
+	Succeeded int               `json:"succeeded"`
+	Failed    int               `json:"failed"`
 }
 
 // ---------- 业务哨兵 ----------
@@ -252,24 +288,119 @@ func (s *Service) Delete(ctx context.Context, targetID int64, opUID int64, p typ
 	return nil
 }
 
-// Unlock 解锁：清 DB 失败计数/冻结 + 清 Redis 计数与锁标记。
-func (s *Service) Unlock(ctx context.Context, targetID int64, opUID int64, p types.RequestParams) error {
-	u, err := s.load(ctx, targetID)
-	if err != nil {
-		return err
+// FreezeUsers 批量冻结：逐项独立（load → 越权守卫 → DB/Redis 双写 → 秒踢全端）；任一项失败不影响其他项。
+// 语义：locked_until = now + minutes（缺省 DefaultFreezeMinutes），status 置 3。
+func (s *Service) FreezeUsers(ctx context.Context, req *BatchFreezeReq, opUID int64, p types.RequestParams, now time.Time) *BatchResp {
+	minutes := DefaultFreezeMinutes
+	if req.Minutes > 0 {
+		if req.Minutes > MaxFreezeMinutes {
+			minutes = MaxFreezeMinutes
+		} else {
+			minutes = req.Minutes
+		}
 	}
-	// 禁止自我解冻/锁定操作（冻结/解冻须由他人执行）
-	if u.ID == opUID {
-		return ErrSelfOperation
+	until := now.Add(time.Duration(minutes) * time.Minute)
+
+	out := &BatchResp{Items: make([]BatchItemResult, 0, len(req.IDs))}
+	for _, idStr := range req.IDs {
+		id, perr := strconv.ParseInt(idStr, 10, 64)
+		if perr != nil {
+			out.add(idStr, false, code.ErrorBadIdentifierFormat)
+			continue
+		}
+		u, err := s.load(ctx, id)
+		if err != nil {
+			out.add(idStr, false, CodeFor(err))
+			continue
+		}
+		if u.IsSuper() { // 超管保护：不可冻结（docs §8.3 平台失管反面）
+			out.add(idStr, false, code.ErrorSuperAdminProtected)
+			continue
+		}
+		if u.ID == opUID { // 冻结/解冻不可自我操作
+			out.add(idStr, false, code.ErrorSelfOperation)
+			continue
+		}
+		if err := s.users.MarkLocked(ctx, u.ID, until); err != nil {
+			out.add(idStr, false, CodeFor(err))
+			continue
+		}
+		if lerr := s.lock.MarkLocked(ctx, u.ID, time.Until(until)); lerr != nil {
+			// Redis 是加速层；DB locked_until 已生效
+			slog.Warn("Redis 写锁定标记失败", "user_id", u.ID, "err", lerr)
+		}
+		if kerr := s.sessions.KickAll(ctx, u.ID); kerr != nil {
+			slog.Warn("冻结账号踢会话失败", "user_id", u.ID, "err", kerr)
+		}
+		out.add(idStr, true, 0)
+		s.audit("sysuser.freeze", opUID, p, map[string]interface{}{
+			"target_id": u.ID, "target_username": u.Username,
+			"minutes": minutes, "until": until.Format(time.DateTime),
+		})
 	}
-	if err := s.users.Unlock(ctx, u.ID); err != nil {
-		return err
+	out.tally()
+	return out
+}
+
+// UnfreezeUsers 批量解冻：清 DB 失败计数/冻结 + 清 Redis 计数与锁标记；逐项独立。
+func (s *Service) UnfreezeUsers(ctx context.Context, req *BatchUnlockReq, opUID int64, p types.RequestParams) *BatchResp {
+	out := &BatchResp{Items: make([]BatchItemResult, 0, len(req.IDs))}
+	for _, idStr := range req.IDs {
+		id, perr := strconv.ParseInt(idStr, 10, 64)
+		if perr != nil {
+			out.add(idStr, false, code.ErrorBadIdentifierFormat)
+			continue
+		}
+		u, err := s.load(ctx, id)
+		if err != nil {
+			out.add(idStr, false, CodeFor(err))
+			continue
+		}
+		if u.ID == opUID {
+			out.add(idStr, false, code.ErrorSelfOperation)
+			continue
+		}
+		if err := s.users.Unlock(ctx, u.ID); err != nil {
+			out.add(idStr, false, CodeFor(err))
+			continue
+		}
+		if lerr := s.lock.ResetFail(ctx, u.ID, sysuser.MaskIdentifier(u.Username), ""); lerr != nil {
+			slog.Warn("清除 Redis 锁定标记失败", "user_id", u.ID, "err", lerr)
+		}
+		out.add(idStr, true, 0)
+		s.audit("sysuser.unfreeze", opUID, p, map[string]interface{}{
+			"target_id": u.ID, "target_username": u.Username,
+		})
 	}
-	if err := s.lock.ResetFail(ctx, u.ID, sysuser.MaskIdentifier(u.Username), ""); err != nil {
-		slog.Warn("清除 Redis 锁定标记失败", "user_id", u.ID, "err", err)
+	out.tally()
+	return out
+}
+
+// CodeFor 本域错误 → 业务码（批量明细逐项使用；跨域总映射在 application.CodeOf）。
+func CodeFor(err error) int {
+	switch {
+	case errors.Is(err, sysuser.ErrNotFound):
+		return code.ErrorSysUserNotFound
+	case errors.Is(err, ErrSuperAdminProtected):
+		return code.ErrorSuperAdminProtected
+	case errors.Is(err, ErrSelfOperation):
+		return code.ErrorSelfOperation
 	}
-	s.audit("sysuser.unlock", opUID, p, map[string]interface{}{"target_id": u.ID})
-	return nil
+	return code.ErrorDatabase
+}
+
+func (b *BatchResp) add(id string, ok bool, codeNum int) {
+	b.Items = append(b.Items, BatchItemResult{ID: id, Success: ok, Code: codeNum})
+}
+
+func (b *BatchResp) tally() {
+	for _, it := range b.Items {
+		if it.Success {
+			b.Succeeded++
+		} else {
+			b.Failed++
+		}
+	}
 }
 
 // ResetPassword 重置密码（docs §9：强审计）。改密即踢全部会话（docs §7/§10）。
@@ -350,5 +481,5 @@ func (s *Service) audit(action string, opUID int64, p types.RequestParams, detai
 	for k, v := range detail {
 		props[k] = v
 	}
-	log.Audit(action, props)
+	dlog.Audit(action, props)
 }

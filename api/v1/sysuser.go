@@ -76,18 +76,26 @@ func (p *SysUserAPI) Delete(ctx *gin.Context) {
 	ctl.RespSuccess(ctx, nil)
 }
 
-// Unlock POST /admin/sys-users/:id/unlock。
-func (p *SysUserAPI) Unlock(ctx *gin.Context) {
-	id, err := parseID(ctx)
-	if err != nil {
+// BatchFreeze POST /admin/sys-users/batch-freeze（逐项独立，含自我/超管/未找到明细）。
+func (p *SysUserAPI) BatchFreeze(ctx *gin.Context) {
+	var req appsysuser.BatchFreezeReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return
 	}
-	if err := p.users.Unlock(ctx.Request.Context(), id, ctx.GetInt64(keyUID), requestParams(ctx)); err != nil {
+	resp := p.users.FreezeUsers(ctx.Request.Context(), &req, ctx.GetInt64(keyUID), requestParams(ctx), time.Now())
+	ctl.RespSuccess(ctx, resp)
+}
+
+// BatchUnfreeze POST /admin/sys-users/batch-unfreeze。
+func (p *SysUserAPI) BatchUnfreeze(ctx *gin.Context) {
+	var req appsysuser.BatchUnlockReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(ctx, err)
 		return
 	}
-	ctl.RespSuccess(ctx, nil)
+	resp := p.users.UnfreezeUsers(ctx.Request.Context(), &req, ctx.GetInt64(keyUID), requestParams(ctx))
+	ctl.RespSuccess(ctx, resp)
 }
 
 // ResetPassword POST /admin/sys-users/:id/reset-password（强审计）。

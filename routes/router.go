@@ -95,7 +95,8 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		admin.POST("sys-users", userAPI.Create)
 		admin.PUT("sys-users/:id", userAPI.Update)
 		admin.DELETE("sys-users/:id", userAPI.Delete)
-		admin.POST("sys-users/:id/unlock", userAPI.Unlock)
+		admin.POST("sys-users/batch-freeze", userAPI.BatchFreeze)
+		admin.POST("sys-users/batch-unfreeze", userAPI.BatchUnfreeze)
 		admin.POST("sys-users/:id/reset-password", userAPI.ResetPassword)
 		admin.GET("login-logs", logAPI.ListLogs)
 	}
