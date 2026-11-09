@@ -37,6 +37,14 @@ var PublicPaths = []string{
 func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions authn.SessionStore) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), middleware.Cors())
+	// 安全修复：gin 默认信任所有代理（XFF 头可伪造）→ ClientIP 可捏造，
+	// 全部 IP 维度限流（登录 20/min、验证码 10/min、撞库 50/h）会被绕过。
+	// 显式不信任任何改写头：ClientIP 直取 TCP 对端地址。
+	// TODO 部署在 nginx/SLB 后时，改用配置的白名单：r.SetTrustedProxies([]string{"10.0.0.0/8"})
+	if err := r.SetTrustedProxies(nil); err != nil {
+		panic(err)
+	}
+	r.Use(middleware.SecureHeaders())
 	// 全局统一鉴权过滤：白名单外的所有请求必须携带有效会话
 	r.Use(middleware.AuthGuard(verifier, sessions, middleware.NewWhitelist(PublicPaths...)))
 

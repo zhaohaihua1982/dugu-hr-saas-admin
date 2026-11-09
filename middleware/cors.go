@@ -34,3 +34,14 @@ func authAbort(c *gin.Context) {
 		Data:   nil,
 	})
 }
+
+// SecureHeaders 基础安全响应头（API 服务最小集：
+// 防 MIME 嗅探、防点劫持嵌入、浏览器缓存策略）。
+func SecureHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Cache-Control", "no-store")
+		c.Next()
+	}
+}
