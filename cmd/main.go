@@ -22,6 +22,7 @@ import (
 	"dugu-hr-saas-admin/application"
 	appauth "dugu-hr-saas-admin/application/auth"
 	apploginlog "dugu-hr-saas-admin/application/loginlog"
+	appmenus "dugu-hr-saas-admin/application/menus"
 	appsysuser "dugu-hr-saas-admin/application/sysuser"
 	conf "dugu-hr-saas-admin/config"
 	"dugu-hr-saas-admin/domain/authn"
@@ -168,6 +169,7 @@ func assemble(ctx context.Context) (*assembled, error) {
 			guard, lock, codes, smsSenderStub{}, mobileCrypto, hasher, ids),
 		Users: appsysuser.NewService(users, sessions, lock, mobileCrypto, hasher, ids),
 		Logs:  apploginlog.NewService(logsRepo),
+		Menus: appmenus.NewService(dao.NewMenuRepository(database, ids), ids),
 	}
 
 	// ---------- interfaces ----------

@@ -27,6 +27,12 @@ var msgMap = map[int]string{
 	ErrorBadIdentifierFormat: "账号或手机号格式不合法",
 	ErrorSuperAdminProtected: "内置超管账号受保护，禁止该操作",
 	ErrorDatabase:            "数据库操作出错，请重试",
+	ErrorMenuNotFound:        "菜单不存在",
+	ErrorMenuHasChildren:     "该菜单存在子节点，请先处理子节点",
+	ErrorMenuActionCodeTaken: "动作编码(action_code)已被占用",
+	ErrorMenuBadParams:       "菜单参数不合法",
+	ErrorMenuLangUnsupported: "语言不被支持（仅支持已注册语言）",
+	ErrorMenuNameRequired:    "菜单名称（默认语言译文）不能为空",
 }
 
 // GetMsg 获取业务码对应文案，未知码回退通用 ERROR 文案。

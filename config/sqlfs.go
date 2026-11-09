@@ -12,7 +12,7 @@ import (
 var sqlFS embed.FS
 
 // SQLFiles 迁移执行顺序：主表在前，日志表在后。
-var SQLFiles = []string{"sql/sys_user.sql", "sql/sys_login_log.sql"}
+var SQLFiles = []string{"sql/sys_user.sql", "sql/sys_login_log.sql", "sql/sys_menu.sql", "sql/sys_menu_i18n.sql"}
 
 // ReadSQL 读取内嵌迁移脚本内容。
 func ReadSQL(name string) (string, error) {

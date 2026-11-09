@@ -7,8 +7,10 @@ import (
 
 	"dugu-hr-saas-admin/application/auth"
 	apploginlog "dugu-hr-saas-admin/application/loginlog"
+	appmenus "dugu-hr-saas-admin/application/menus"
 	appsysuser "dugu-hr-saas-admin/application/sysuser"
 	"dugu-hr-saas-admin/domain/authn"
+	dmenu "dugu-hr-saas-admin/domain/menu"
 	"dugu-hr-saas-admin/domain/sysuser"
 	"dugu-hr-saas-admin/pkg/code"
 )
@@ -18,6 +20,7 @@ type Services struct {
 	Auth  *auth.Service
 	Users *appsysuser.Service
 	Logs  *apploginlog.Service
+	Menus *appmenus.Service
 }
 
 // CodeOf 领域错误 → pkg/code 业务码（api 层组装响应时使用）。
@@ -66,6 +69,20 @@ func CodeOf(err error) int {
 		return code.ErrorSuperAdminProtected
 	case errors.Is(err, appsysuser.ErrSelfOperation):
 		return code.ErrorSelfOperation
+	case errors.Is(err, appmenus.ErrBadMenuID), errors.Is(err, dmenu.ErrNotFound):
+		return code.ErrorMenuNotFound
+	case errors.Is(err, dmenu.ErrNotFound):
+		return code.ErrorMenuNotFound
+	case errors.Is(err, dmenu.ErrHasChildren):
+		return code.ErrorMenuHasChildren
+	case errors.Is(err, dmenu.ErrActionCodeTaken):
+		return code.ErrorMenuActionCodeTaken
+	case errors.Is(err, dmenu.ErrLangUnsupported):
+		return code.ErrorMenuLangUnsupported
+	case errors.Is(err, dmenu.ErrNameRequired):
+		return code.ErrorMenuNameRequired
+	case errors.Is(err, dmenu.ErrBadParams):
+		return code.ErrorMenuBadParams
 	}
 	return code.ErrorDatabase
 }

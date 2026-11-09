@@ -30,6 +30,14 @@ const (
 	ErrorSuperAdminProtected = 30026 // 超管账号受保护，禁止该操作
 	ErrorSelfOperation       = 30027 // 不能对当前登录账号自身执行停用/启用、解锁等操作
 
+	// ---------- 菜单（30031~30036，docs 三模块设计 §5） ----------
+	ErrorMenuNotFound        = 30031 // 菜单不存在
+	ErrorMenuHasChildren     = 30032 // 菜单存在子节点，禁止删除/改类型
+	ErrorMenuActionCodeTaken = 30033 // 动作编码(action_code)已被占用
+	ErrorMenuBadParams       = 30034 // 菜单参数不合法（字段/父节点/环/深度）
+	ErrorMenuLangUnsupported = 30035 // 语言不被支持（names key 须为已注册语言）
+	ErrorMenuNameRequired    = 30036 // 默认语言名称（主表 name）不能为空
+
 	// ---------- 路由兜底 ----------
 	ErrorNotFoundNoRoute = 404 // 接口不存在或请求方式不对（GET 访问了 POST 接口等）
 

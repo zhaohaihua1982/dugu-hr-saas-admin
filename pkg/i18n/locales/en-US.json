@@ -24,6 +24,13 @@
   "30026": "Built-in super admin account is protected, operation denied",
   "30027": "You cannot perform this operation on your own account",
 
+  "30031": "Menu not found",
+  "30032": "This menu has child nodes; process them first",
+  "30033": "Action code (action_code) is already taken",
+  "30034": "Invalid menu parameters",
+  "30035": "Language not supported (registered languages only)",
+  "30036": "Menu name (default-language name) is required",
+
   "404": "Endpoint not found or wrong HTTP method (POST/GET are strictly separated)",
 
   "40001": "Database error, please retry",

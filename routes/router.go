@@ -99,6 +99,16 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		admin.POST("sys-users/batch-unfreeze", userAPI.BatchUnfreeze)
 		admin.POST("sys-users/:id/reset-password", userAPI.ResetPassword)
 		admin.GET("login-logs", logAPI.ListLogs)
+
+		// 菜单管理（docs 三模块设计 §4；gin 1.12 静态/参数路由可共存）：
+		// tree 静态段优先于 :id 匹配，GET /menus/:id 拿不到 "tree"。
+		menuAPI := v1.NewMenuAPI(svc.Menus)
+		admin.GET("menus/tree", menuAPI.Tree)
+		admin.GET("menus/:id", menuAPI.Detail)
+		admin.POST("menus", menuAPI.Create)
+		admin.PUT("menus/:id", menuAPI.Update)
+		admin.DELETE("menus/:id", menuAPI.Delete)
+		admin.POST("menus/sort", menuAPI.Sort)
 	}
 	return r
 }
