@@ -1,8 +1,9 @@
 # SaaS 管理后台 · 管理账号（sys_user）设计
 
-> 版本 v1.1 · 范围：**仅管理账号体系**（平台运营方自己的管理后台）
+> 版本 v1.2 · 范围：**仅管理账号体系**（平台运营方自己的管理后台）
 > 创建：2026-11-06 · 最后修改：2026-11-09
-> v1.1 增量：见 §13（批量冻结/解冻等已上线增量，实现与文档保持同步）
+> 增量章节：§13（v1.1/v1.2 已上线增量，与实现同步）；§14（边界补充）；§15（部署与运维）
+> 规矩：代码变更一律同 commit 写入本文档。
 > 租户账号（`hr_account`）本次不设计，见 §12。
 
 ---
@@ -266,7 +267,8 @@ POST   /api/v1/admin/sys-users/batch-freeze      批量冻结（v1.1，契约见
 POST   /api/v1/admin/sys-users/batch-unfreeze    批量解冻（v1.1，契约见 §13.1）
 （v1.1 移除：POST /sys-users/{id}/unlock，由 batch-unfreeze 替代）
 POST   /api/v1/admin/sys-users/{id}/reset-password   重置密码（强审计）
-GET    /api/v1/admin/login-logs             登录日志查询
+GET    /api/v1/admin/login-logs             登录日志查询（v1.2：identifier/到 HH:mm:ss/默认当天）
+GET    /healthz                             存活探针（白名单，不探依赖；见 §15）
 ```
 
 ---
@@ -310,7 +312,7 @@ P0 的验收标准：**一个初始超管账号能登录，输错 5 次会被锁
 1. **它是一套独立的表和独立的路由**，不是 `sys_user` 加 `tenant_id`。两者的生命周期、安全策略、规模都不同。
 2. 之前讨论过的一批结论（标识与账号分离、多标识唯一键设计、SSO 只负责换 user_id、密码策略取最严等）属于租户侧问题，等做 `hr_account` 时再启用。
 3. 两套体系之间的唯一合法通道是"平台员工代客操作"这类**显式授权功能**（要审计、要限时），绝不是共享登录代码或共享表。
-## 13. v1.1 已上线增量（与实现同步，2026-11-09）
+## 13. 已上线增量（v1.1/v1.2，与实现同 commit 登记）
 
 ### 13.1 批量冻结 / 批量解冻
 
@@ -324,48 +326,120 @@ POST /api/v1/admin/sys-users/batch-unfreeze   { "ids": ["...","..."] }
 | ids | 字符串数组，≤100 条；单条解析失败按 `30025` 逐项返回，不打断批 |
 | minutes | 仅 batch-freeze：1~10080，缺省 60 分钟，超上限收敛 |
 | 响应 | `{items:[{id,success,code?}],succeeded,failed}`；**逐项独立**，部分失败不影响已成功项 |
-| 冻结语义 | `locked_until = now + minutes` + `status=3`（DB 权威）+ Redis 锁标记（加速层）+ 全端秒踢（§7）；“Redis 故障回落 DB”规则同 §6 |
+| 冻结语义 | `locked_until = now + minutes` + `status=3`（DB 权威）+ Redis 锁标记（加速层）+ 全端秒踢（§7）；Redis 故障回落 DB 规则同 §6 |
 | 解冻语义 | 清 `fail_count`/`locked_until`、状态回 1、清 Redis 计数与锁标记 |
-| 与自动锁定的关系 | §6 的“连错 5 次锁 15 分钟”是自动安全锁定；人工冻结默认 60 分钟，二者并行（复用 `locked_until` 字段），不混用语义 |
-| 管理红线 | 超管（admin）不可被任何人冻结（§8.3）；冻结/解冻不可对“当前登录人自己”执行——逐项返回 `30026`/`30027` |
-| 幂等 | 冻结已冻结者=顺延锁定期（`locked_until` 重置到新时刻）；解冻非冻结者=无害（清计数仍执行） |
-| 审计 | 每条成功项单独审计 `sysuser.freeze/unfreeze`（操作者、目标、时长/到期、来源 IP），§8.3“强制审计”的延伸 |
+| 与 §6 自动锁定的关系 | “连错 5 次锁 15 分钟”是自动安全锁定；人工冻结默认 60 分钟，复用 `locked_until` 字段，语义并行 |
+| 管理红线 | 超管不可被任何人冻结（`30026`，§8.3）；冻结/解冻不可操作自己（`30027`） |
+| 幂等 | 冻结已冻结者=顺延锁定期；解冻非冻结者=无害（清计数仍执行） |
+| 审计 | 每条成功项独立审计 `sysuser.freeze/unfreeze`（操作者/目标/时长/到期/来源 IP） |
+| 接口变更 | **移除** `POST /sys-users/{id}/unlock`，由 batch-unfreeze 替代 |
 
-### 13.3 登录日志时间范围（v1.2）
+### 13.2 鉴权过滤与白名单
+
+- 全局统一过滤 `AuthGuard`：白名单外任何请求必须携带有效会话——**安全默认 deny**，新增接口不配置即被拦；
+- 白名单 `routes.PublicPaths`：`/healthz`、`auth/captcha`、`auth/sms/send`、`auth/login/password`、`auth/login/sms`；`logout/me` 与全部管理面须登录；
+- 鉴权链：JWT（HS256，仅 uid/jti）→ Redis 会话（删键即踢）→ 归属一致校验 → 8h 滑动续期（24h 硬上限）。
+
+### 13.3 图形验证码
+
+- `GET`/`POST` 双开（地址栏与 `<img>` 场景天然 GET；签发是免费一次性资源）；
+- 签发防刷（IP）：10/分钟 + 60/小时双窗口，超限 `30017`；
+- 答案 5 位数字，一次性（GetDel）、5 分钟有效，存储在 Redis。
+
+### 13.4 登录输入快筛（“达标才校验”）
+
+| 输入 | 处理 |
+|---|---|
+| 密码 <6 位 / >128 | `30024`，不进 DB/Redis/bcrypt |
+| identifier 空/超长/控制字符 | `30025` |
+| 短信码非 6 位数字 | `400`，不消耗一次性码与试错计数 |
+| 图形码答案非 5 位数字 | `30013`，不碰 Redis |
+
+快筛判据与账号是否存在无关（同等拒绝），不构成存在性枚举信号。
+
+### 13.5 自操作防线与 is_current
+
+- **自操作**：停用/启用、删除、冻结/解冻的目标=当前登录人 → 拒绝（`30027`，应用层与接口层双保险）；
+- **is_current**：`sys_user` 列表、登录响应、`auth/me` 的 user 视图逐行/恒定标注“是否当前登录人”，前端据此灰 checkbox、隐藏自我操作按钮。
+
+### 13.6 语言中立响应合同
+
+| 项 | 约定 |
+|---|---|
+| 雪花 ID | 字符串（超 JS 2^53，JSON 库大整型行为差异） |
+| 时间 | `"yyyy-MM-dd HH:mm:ss"` 字符串 |
+| 手机号 | mask（138****0000）；明文只在发短信内部路径 |
+| 枚举 | 大写字符串（PASSWORD/SMS/USERNAME…） |
+| 校验失败(400) | data=非法字段名数组（camelCase），不泄漏 Go 结构名/校验 tag |
+| 404/405 兜底 | JSON 回显 `{method,path}` 并双语提示 |
+| 多语言 | 请求级 `?lang=`/`Accept-Language`；默认链 yaml i18n.defaultLang > SAAS_LANG > zh-CN |
+
+### 13.7 登录日志（v1.2）
 
 | 项 | 规则 |
 |---|---|
-| 入参 | `start_at`/`end_at`：`YYYY-MM-DD HH:mm:ss` 或纯日期（兼容），**秒级精度，不收毫秒**（毫秒/含小数点值 → `400`）——显式拒绝是对 Go `time.Parse` 隐式接受小数秒的防御，同响应合同“无语言惯性”口径 |
-| 边界 | 纯日期 end 含末日全天（内部 `23:59:59.999` 截止，对入参不暴露）；秒级 end 即精确值 |
-| 默认 | **start/end 都不传 → 只查当天**（00:00:00~23:59:59.999）；单边传值不受默认影响 |
-| 组合 | 可与 identifier/user_id/ip/success 任一叠加；走 `idx_log_identifier` / `idx_log_time` 索引 |
+| 标识落库 | **账号原样**、手机号归一化 mask（138****8000）；列名暂为 `identifier_mask`（v1.3 若重命名需 breaking 迁移评审，见 §16） |
+| 标识查询 | `?identifier=<原始输入>` 同规则转换后精确匹配；兼容传旧 mask（旧 ad***in 不可逆推） |
+| 时间范围 | `start_at/end_at`：`YYYY-MM-DD HH:mm:ss` 或纯日期（兼容），**秒级、不收毫秒**（含小数点 → `400`，防御 Go time.Parse 隐式接受小数秒）；纯日期 end 含当日全天 |
+| 默认窗口 | start/end 都不传 → **只查当天**（00:00~23:59:59.999） |
+| 索引 | 新库 DDL 自带 `idx_log_identifier(identifier_mask, created_at)`；存量表由 v1.2 起“幂等增量索引”机制（information_schema 检查 → CREATE INDEX；新索引在 indexSpecs 登记） |
+| 叠加 | user_id/ip/success 与时间/标识可任一组合，走 idx_log_* 原三条索引 |
 
-### 13.3 登录日志标识列 v1.2（账号原样、手机脱敏）
+### 13.8 安全修复
 
-| 项 | 规则 |
-|---|---|
-| 落库 | `identifier_mask`：**账号原样**（账号非 PII，支持精确回查与审计关联）；手机号归一化后 `138****8000`（PII 原则不变） |
-| 查询 | `GET /login-logs?identifier=<原始输入>`：应用层与落库同规则转换后**精确匹配**（命中索引 `idx_log_identifier(identifier_mask, created_at)`，v1.2 执行幂等增量迁移补建）；兼容直接传旧 mask |
-| 存量 | v1.1 前写入的旧 mask（`ad***in`）不可逆推原账号，保留原样；用 `?identifier=ad***in` 可查旧数据 |
-| 响应 | `identifier_mask` 字段对账号返回原样字符串 |
+- `SetTrustedProxies(nil)`：修复 gin 默认信任所有代理头 → 伪造 `X-Forwarded-For` 绕过三层 IP 限流的漏洞；部署 nginx/SLB 后改受信代理白名单；
+- 基础安全响应头：`nosniff` / `DENY` / `no-store`。
 
-### 13.2 其他已上线增量（登记以免文档与实现 diff）
-
-- **鉴权**：全局统一过滤 AuthGuard（安全默认 deny）+ 白名单 `PublicPaths`（/healthz、auth/captcha、auth/sms/send、auth/login/*）；logout/me 与全部管理面须登录。
-- **验证码**：GET/POST 双开（地址栏/`<img>` 场景）；签发防刷：单 IP 10/分钟、60/小时。
-- **登录输入快筛**：密码 <6 位、标识空/超长/控制字符、短信码非 6 位、图形码答案非 5 位——不达标直接打回，不消耗 bcrypt/DB/Redis（对存在/不存在账号同等拒绝，无枚举信号）。
-- **自操作防线**：停用/启用、删除、锁定/解锁的目标=当前登录人 → 拒绝（业务码 `30027`）。
-- **is_current**：sys_user 列表/登录/me 视图逐行标注“是否当前登录人”（前端灰 checkbox、隐藏自我操作按钮；后端 30027 兜底）。
-- **语言中立响应合同**：雪花 ID 字符串输出（约 2^53 边界）；时间为自格式化字符串；校验失败只给非法字段名数组（不泄漏后端结构名/校验 tag）；404/405 JSON 兜底（回显 method/path）。
-- **安全修复**：`SetTrustedProxies(nil)` 修复伪造 `X-Forwarded-For` 绕过 IP 限流的漏洞；基础安全响应头（nosniff/DENY/no-store）。
-
-## 14. 边界情况补充（v1.1）
+## 14. 边界情况补充（v1.1/v1.2，叠加 §10）
 
 | 情况 | 处理 |
 |---|---|
-| 批量冻结请求含“自己” | 该条返回 `30027`，其余条目正常处理（部分成功语义） |
-| 批量冻结含“超管 admin” | 该条返回 `30026`，其余条目正常处理 |
-| 冻结 minutes 缺省/越界 | 缺省 60 分钟；>10080 收敛到上限，不报错 |
+| 批量冻结含“自己” | 该条 `30027`，其余条目正常处理 |
+| 批量冻结含“超管 admin” | 该条 `30026`，其余正常 |
+| 冻结 minutes 缺省/越界 | 缺省 60 分钟；>10080 收敛上限，不报错 |
 | 对已冻结用户再次冻结 | 顺延：`locked_until` 重置到新时刻 |
 | 解冻非冻结状态用户 | 无害：清计数执行，状态回 1 |
+| 登录日志 start/end 都不传 | 只查当天（§13.7） |
+| 时间参数带毫秒/小数点 | `400`（不收毫秒） |
+| identifier 传旧 mask | 兼容命中历史行 |
 
+## 15. 部署与运维（v1.2 登记）
+
+### 15.1 初始超管账号
+
+- 仅当 `sys_user` 表**为空**时 seed：username 固定 `admin`；密码/手机/邮箱取 `config/locales/config.yaml` 的 `bootstrapAdmin`（dev 默认 `HrSaas@2026#Admin` / `13800000000`）；
+- 生产必须环境变量覆盖：`SAAS_BOOTSTRAP_ADMIN_PASSWORD/_MOBILE/_NAME/_EMAIL`；种子密码须满足密码策略，否则启动失败；
+- seed 只对空库生效，**永不覆盖**已有账号；改密走 reset-password（强审计）。
+
+### 15.2 配置与环境变量
+
+| 变量 | 用途 |
+|---|---|
+| `SAAS_MYSQL_DEFAULT_HOST/PORT/NAME/USER/PASSWORD` | MySQL（dbName 固定 `dugu-hr-saas-admin`） |
+| `SAAS_REDIS_HOST/PORT/USERNAME/PASSWORD/DB` | Redis |
+| `SAAS_JWT_SECRET` / `SAAS_MOBILE_HMAC` / `SAAS_MOBILE_AES` | 会话签名 / 手机号 HMAC / AES-256（64 位 hex）；prod 必须覆盖（默认 dev 密钥在 prod 拒绝启动） |
+| `SAAS_BOOTSTRAP_ADMIN_*` | 初始超管 |
+| `SAAS_ADDR` / `SAAS_DEBUG` | 监听地址 / SQL 日志 |
+| `SAAS_LANG` / yaml `i18n.defaultLang` | 默认语言（请求级参数优先） |
+
+### 15.3 服务管理脚本
+
+| 命令 | 行为 |
+|---|---|
+| `make start` / `bash scripts/start.sh` | 幂等后台启动（pid 文件）、可选编译（SKIP_BUILD=1）、固定项目根为工作目录、/healthz 轮询就绪（15s），失败打印日志尾部 |
+| `make stop` / `bash scripts/stop.sh` | PID 定位 → SIGTERM 优雅关停（10s 超时 SIGKILL）→ 确认端口释放 |
+| `make restart` / `make status` | 重启 / 状态（pid + healthz） |
+| 日志 | `logs/run-YYYY-MM-DD.log` 按天切分 |
+| `bash scripts/clear-ratelimit.sh [ip|--all]` | 开发期一键清限流计数器（不动验证码/短信码本体；**生产禁用**） |
+
+### 15.4 启动纪律与演进
+
+- 二进制**必须以项目根为工作目录**启动（`config/locales` 相对路径）——start.sh 已强制；
+- 迁移每次启动幂等执行（IF NOT EXISTS + information_schema 增量索引检查）；
+- 多副本部署演进：把 `Migrate/Seed` 拆为部署期子命令 + 版本化迁移（`schema_migrations`），出现第二个增量 DDL 时引入。
+
+## 16. 演进备忘
+
+- `identifier_mask` 列名与语义已脱节（v1.2 账号原样），v1.3 可考虑改名（MySQL 8 ALGORITHM=INPLACE）并同步接口字段；
+- 前端 token 存放（当前 JSON 返回、前端自管）——如改后端 HttpOnly Cookie 需另行设计；
+- 密码快筛下限 6 位为兼容旧弱口令；存量全部完成 bcrypt 升级后可收紧至 10。
