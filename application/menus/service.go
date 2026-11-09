@@ -236,10 +236,10 @@ func (s *Service) Create(ctx context.Context, req *UpsertMenuReq, opUID int64, p
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
-	if err := s.checkParent(ctx, m.ParentID, 0); err != nil {
+	if err := s.checkParent(ctx, m.Type, m.ParentID, 0); err != nil {
 		return nil, err
 	}
-	if err := s.checkDepth(ctx, m.ParentID, 0); err != nil {
+	if err := s.checkDepth(ctx, m.ParentID, 0, m.Type); err != nil {
 		return nil, err
 	}
 	m.ID = s.ids.New()
@@ -275,6 +275,10 @@ func (s *Service) Update(ctx context.Context, id int64, req *UpdateMenuReq, opUI
 			return nil, dmenu.ErrHasChildren
 		}
 		m.Type = dmenu.Type(*req.Type)
+		// 类型变化后重放“类型×父”规则（如 menu→dir 后要求父必须是目录）
+		if err := s.checkParent(ctx, m.Type, m.ParentID, id); err != nil {
+			return nil, err
+		}
 	}
 	// 移动：parent_id 传了且不同 → 结构校验
 	if req.ParentID != nil {
@@ -283,10 +287,10 @@ func (s *Service) Update(ctx context.Context, id int64, req *UpdateMenuReq, opUI
 			return nil, pErr
 		}
 		if newParentID != m.ParentID {
-			if err := s.checkParent(ctx, newParentID, id); err != nil {
+			if err := s.checkParent(ctx, m.Type, newParentID, id); err != nil {
 				return nil, err
 			}
-			if err := s.checkDepth(ctx, newParentID, id); err != nil {
+			if err := s.checkDepth(ctx, newParentID, id, m.Type); err != nil {
 				return nil, err
 			}
 			if err := s.menus.Move(ctx, id, newParentID); err != nil {
@@ -481,10 +485,18 @@ func parseParentID(raw string) (int64, error) {
 	return id, nil
 }
 
-// checkParent 父结构校验：存在、不是动作（动作是叶子）、不能是自己。
-func (s *Service) checkParent(ctx context.Context, parentID, selfID int64) error {
+// checkParent 节点类型 × 父结构校验（docs §11.2 类型矩阵）：
+//   - 目录：父为根或目录（目录可嵌套，计入层级）；
+//   - 菜单：**只能挂目录**——不能作根（一级必须是目录），也不能挂菜单；
+//   - 动作：可挂目录或菜单、不计入层级，但**不能作根**（动作永远依附页面/目录入口）。
+//
+// 父不存在 / 挂动作节点（动作是叶子）/ 层级类型不符 → ErrBadParams。
+func (s *Service) checkParent(ctx context.Context, selfType dmenu.Type, parentID, selfID int64) error {
 	if parentID == 0 {
-		return nil
+		if selfType == dmenu.TypeDir {
+			return nil // 仅目录可作根
+		}
+		return dmenu.ErrBadParams // 菜单/动作必须挂在节点下（一级必须是目录）
 	}
 	if parentID == selfID {
 		return dmenu.ErrBadParams
@@ -497,36 +509,50 @@ func (s *Service) checkParent(ctx context.Context, parentID, selfID int64) error
 		return dmenu.ErrBadParams
 	}
 	if p.Type == dmenu.TypeAction {
-		return dmenu.ErrBadParams
+		return dmenu.ErrBadParams // 动作是叶子，不可挂子
+	}
+	switch selfType {
+	case dmenu.TypeDir, dmenu.TypeMenu:
+		if p.Type != dmenu.TypeDir {
+			return dmenu.ErrBadParams // 目录/菜单只能挂在目录下
+		}
+	default: // 动作
+		// 父为目录或菜单均可
 	}
 	return nil
 }
 
 // checkDepth 沿父链上溯：命中 selfID=成环；深度 > MaxDepth=超限。
-// 全量一次 ListAll 内存判定（菜单是百级数据，避免逐层查询）。
-func (s *Service) checkDepth(ctx context.Context, newParentID, selfID int64) error {
+// all 数据量小（菜单是百级），一次 ListAll 内存判定，免逐层 N 次查询。
+func (s *Service) checkDepth(ctx context.Context, newParentID, selfID int64, childType dmenu.Type) error {
 	all, err := s.menus.ListAll(ctx)
 	if err != nil {
 		return err
 	}
-	parentOf := make(map[int64]int64, len(all))
+	nodes := make(map[int64]dmenu.Menu, len(all))
 	for i := range all {
-		parentOf[all[i].ID] = all[i].ParentID
+		nodes[all[i].ID] = all[i]
 	}
+	// 循环结束后 depth == newParent 所在的 dir/menu 层级（动作祖先不计层）；
+	// 新节点层级 = depth + 1 ≤ MaxDepth(3)。恰好拦下挂在三级节点下的第 4 级。
 	depth, cur := 0, newParentID
 	for cur != 0 {
 		if cur == selfID {
-			return dmenu.ErrBadParams
+			return dmenu.ErrBadParams // 成环：父链包含自己
 		}
-		p, ok := parentOf[cur]
+		node, ok := nodes[cur]
 		if !ok {
 			return dmenu.ErrBadParams
 		}
-		cur = p
-		depth++
-		if depth > dmenu.MaxDepth {
-			return dmenu.ErrBadParams
+		cur = node.ParentID
+		if node.Type == dmenu.TypeAction {
+			continue // 动作不计层级（docs：action 数据不算菜单）
 		}
+		depth++
+	}
+	// 动作不计层级（docs：action 数据不算菜单）——只做环/父存在校验，不受层级上限
+	if childType != dmenu.TypeAction && depth >= dmenu.MaxDepth {
+		return dmenu.ErrBadParams
 	}
 	return nil
 }

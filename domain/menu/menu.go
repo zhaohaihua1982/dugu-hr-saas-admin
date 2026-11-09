@@ -54,8 +54,10 @@ const (
 	StatusOff Status = 0
 )
 
-// MaxDepth 任意链路最大层级（防止恶意构造超深树；docs 未定死，登记为实现约束）。
-const MaxDepth = 8
+// MaxDepth 树最大层级 = 3。**只统计目录/菜单**（动作 type=3 不计入层级，
+// docs：action 数据不算菜单；动作永远依附在目录/菜单下且自身是叶子）。
+// 父链上 dir/menu 节点数 ≥ 3 时，不能再挂目录/菜单（超限 → 30034）。
+const MaxDepth = 3
 
 // 字段长度上限（与 DDL 一致）。
 const (
