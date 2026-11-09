@@ -8,8 +8,14 @@ import (
 
 func TestRegisteredLanguages(t *testing.T) {
 	langs := Languages()
-	if len(langs) < 2 {
-		t.Fatalf("至少应注册 zh-CN/en-US 两个语言包，实际 %v", langs)
+	// 管理后台前端固定三语言（docs 前端多语言与菜单接口协同修改建议 §3.1）
+	if len(langs) < 3 {
+		t.Fatalf("至少应注册 zh-CN/zh-TW/en-US 三个语言包，实际 %v", langs)
+	}
+	for _, want := range []Lang{LangZH, "zh-TW", LangEN} {
+		if !Supported(want) {
+			t.Fatalf("语言 %s 未注册: %v", want, langs)
+		}
 	}
 	if !Supported("en_us") || !Supported("EN-US") {
 		t.Fatal("大小写/下划线写法应归一化命中")
@@ -25,6 +31,10 @@ func TestMsgBasic(t *testing.T) {
 	}
 	if m := Msg(LangEN, 30010); m != "Incorrect account or password" {
 		t.Fatalf("en-US 30010 文案错误: %q", m)
+	}
+	// zh-TW：繁体业务错误文案（协同修改建议 §5 验收 1）
+	if m := Msg("zh-TW", 30010); m != "帳號或密碼錯誤" {
+		t.Fatalf("zh-TW 30010 文案错误: %q", m)
 	}
 }
 
