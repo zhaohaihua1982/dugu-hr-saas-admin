@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"dugu-hr-saas-admin/application/auth"
+	appi18n "dugu-hr-saas-admin/application/i18n"
 	apploginlog "dugu-hr-saas-admin/application/loginlog"
 	appmenus "dugu-hr-saas-admin/application/menus"
 	appsysuser "dugu-hr-saas-admin/application/sysuser"
@@ -22,6 +23,7 @@ type Services struct {
 	Users *appsysuser.Service
 	Logs  *apploginlog.Service
 	Menus *appmenus.Service
+	I18n  *appi18n.Service
 }
 
 // CodeOf 领域错误 → pkg/code 业务码（api 层组装响应时使用）。
@@ -70,6 +72,8 @@ func CodeOf(err error) int {
 		return code.ErrorSuperAdminProtected
 	case errors.Is(err, appsysuser.ErrSelfOperation):
 		return code.ErrorSelfOperation
+	case errors.Is(err, di18n.ErrBadReq):
+		return code.InvalidParams
 	case errors.Is(err, appmenus.ErrBadMenuID), errors.Is(err, dmenu.ErrNotFound):
 		return code.ErrorMenuNotFound
 	case errors.Is(err, dmenu.ErrNotFound):
@@ -80,6 +84,10 @@ func CodeOf(err error) int {
 		return code.ErrorMenuSameLevelTaken
 	case errors.Is(err, dmenu.ErrLangUnsupported), errors.Is(err, di18n.ErrLangUnsupported):
 		return code.ErrorMenuLangUnsupported
+	case errors.Is(err, di18n.ErrDefaultLang):
+		return code.InvalidParams // msg 走语言包键 i18n.defaultLang（api 层 specialize）
+	case errors.Is(err, di18n.ErrResNotFound):
+		return code.ErrorI18nResNot
 	case errors.Is(err, di18n.ErrTargetUnregistered):
 		return code.ErrorI18nTarget
 	case errors.Is(err, di18n.ErrContentInvalid):

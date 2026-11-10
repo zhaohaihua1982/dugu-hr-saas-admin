@@ -21,6 +21,7 @@ import (
 
 	"dugu-hr-saas-admin/application"
 	appauth "dugu-hr-saas-admin/application/auth"
+	appi18n "dugu-hr-saas-admin/application/i18n"
 	apploginlog "dugu-hr-saas-admin/application/loginlog"
 	appmenus "dugu-hr-saas-admin/application/menus"
 	appsysuser "dugu-hr-saas-admin/application/sysuser"
@@ -163,12 +164,16 @@ func assemble(ctx context.Context) (*assembled, error) {
 	codes := cache.NewSmsCodeStore(redisClient)
 
 	// ---------- application ----------
+	// 资源 Resolver 注册（docs 基础设施-i18n设计 §7.3）：menu 已落地；dict_item 随字典模块追加。
+	dao.RegisterI18nResolvers(database)
+
 	svc := &application.Services{
 		Auth: appauth.NewService(users, logsRepo, tokens, sessions, captchaSvc,
 			guard, lock, codes, smsSenderStub{}, mobileCrypto, hasher, ids),
 		Users: appsysuser.NewService(users, sessions, lock, mobileCrypto, hasher, ids),
 		Logs:  apploginlog.NewService(logsRepo),
 		Menus: appmenus.NewService(dao.NewMenuRepository(database, ids), ids),
+		I18n:  appi18n.NewService(dao.NewI18nRepository(database, ids)),
 	}
 
 	// 存量繁体译文补齐（docs《菜单繁体中文存量数据补齐建议.md》）：幂等，不覆盖人工译文。

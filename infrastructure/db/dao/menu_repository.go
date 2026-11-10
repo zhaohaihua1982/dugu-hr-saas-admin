@@ -15,6 +15,7 @@ import (
 	"dugu-hr-saas-admin/domain/menu"
 	"dugu-hr-saas-admin/infrastructure/db"
 	"dugu-hr-saas-admin/infrastructure/db/po"
+	pkgi18n "dugu-hr-saas-admin/pkg/i18n"
 )
 
 // 编译期断言：满足领域端口。
@@ -33,13 +34,20 @@ func NewMenuRepository(d *db.DB, ids authn.IDGenerator) *MenuRepository {
 }
 
 // nameTexts 把菜单的 names（lang→名）转成统一表 Save 的 {field:{lang:content}} 形状。
+// **默认语言跳过**（§7.4：主表 name 已是默认语言值，译文表再存一份就是两份真相）。
 func nameTexts(names map[string]string) map[string]map[di18n.Lang]string {
 	if len(names) == 0 {
 		return nil
 	}
 	langs := make(map[di18n.Lang]string, len(names))
 	for l, v := range names {
+		if pkgi18n.Lang(l) == pkgi18n.Default() {
+			continue
+		}
 		langs[di18n.Lang(l)] = v
+	}
+	if len(langs) == 0 {
+		return nil
 	}
 	return map[string]map[di18n.Lang]string{menuNameField: langs}
 }
@@ -236,11 +244,13 @@ func (r *MenuRepository) ListAll(ctx context.Context) ([]menu.Menu, error) {
 }
 
 // NamesByIDs 批量取全部语言的 name 译文（走统一翻译表 GetMany；详情/编辑页回填用）。
+// **默认语言的行剔除**（§7.4：默认语言直接取主表 name，译文表遗留 zh-CN 历史行不回传）。
 func (r *MenuRepository) NamesByIDs(ctx context.Context, ids []int64) (map[int64]map[string]string, error) {
 	many, err := r.t.GetMany(ctx, di18n.ResMenu, ids, []string{menuNameField}, nil)
 	if err != nil {
 		return nil, err
 	}
+	def := pkgi18n.Default()
 	out := make(map[int64]map[string]string, len(many))
 	for id, byField := range many {
 		byLang := byField[menuNameField]
@@ -249,9 +259,14 @@ func (r *MenuRepository) NamesByIDs(ctx context.Context, ids []int64) (map[int64
 		}
 		names := make(map[string]string, len(byLang))
 		for l, v := range byLang {
+			if pkgi18n.Lang(l) == def {
+				continue // 默认语言排除（读只回真正"译文"）
+			}
 			names[string(l)] = v
 		}
-		out[id] = names
+		if len(names) > 0 {
+			out[id] = names
+		}
 	}
 	return out, nil
 }

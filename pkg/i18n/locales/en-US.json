@@ -30,7 +30,9 @@
   "30037": "Duplicate name or path within the same level, or code already exists for this type",
   "30038": "Resource or field not registered for translation",
   "30039": "Translation text too long or contains illegal characters",
+  "30040": "Translation target resource not found or has been deleted",
   "404": "Endpoint not found or wrong HTTP method (POST/GET are strictly separated)",
   "40001": "Database error, please retry",
+  "i18n.defaultLang": "Default language must be edited on the resource edit page; the translation API does not accept it",
   "sms.sent": "Sent"
 }

@@ -263,7 +263,7 @@ func (s *Service) DeleteType(ctx context.Context, id int64) error
 
 **与错误码语言包的分工不变**：`30041` 这类错误文案归开发（`pkg/i18n/locales`）；字典 `label` 归运营（数据库）。两套机制各管一段，不是重复。
 
-**与错误码语言包的分工不变**：`30041` 这类错误文案归开发（`pkg/i18n/locales`）；字典 `label` 归运营（数据库）。两套机制各管一段，不是重复。
+**编辑入口（v1.2 补充）**：字典页只维护**默认语言** `label`（进主表，走字典保存接口）；其他语言的译文由通用翻译组件 `<I18nTextForm res-type="dict_item" :fields="['label']">` 提交到 `PUT /api/v1/admin/i18n/texts`，**字典侧不单独实现一套译文接口**（接口清单见《基础设施-数据文案多语言(i18n)设计.md》§7.5）。实现前需给 `dict_item` 提供 `Resolver`（`Exists`/`Snapshot`/`ListIDs`/`PermWrite`），否则翻译页看不到字典项、也无法阻止孤儿译文（同文 §7.3、§10）。
 
 ---
 

@@ -96,7 +96,7 @@ func (d *DB) Migrate(ctx context.Context, ids authn.IDGenerator) error {
 	return d.backfillAndDropMenuI18n(ctx, ids) // v0.6：旧译文表数据并入统一翻译表后退役（幂等）
 }
 
-// ---------- v0.6 译文存量迁移（docs 基础设施-数据文案多语言(i18n)设计.md §8） ----------
+// ---------- v0.6 译文存量迁移（docs 基础设施-数据文案多语言(i18n)设计.md §9） ----------
 
 // backfillAndDropMenuI18n —— sys_menu_i18n → sys_i18n_text（res_type='menu'、field='name'）。
 // 幂等三步，全库一次性执行：

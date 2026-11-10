@@ -36,6 +36,7 @@ var msgMap = map[int]string{
 	ErrorMenuSameLevelTaken:  "名称或请求地址与其同级重复，或该类型下权限点(code)重复",
 	ErrorI18nTarget:          "翻译资源类型或字段未登记",
 	ErrorI18nContent:         "译文超长或含非法字符",
+	ErrorI18nResNot:          "译文目标资源不存在或已被删除",
 }
 
 // GetMsg 获取业务码对应文案，未知码回退通用 ERROR 文案。

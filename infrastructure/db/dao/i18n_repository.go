@@ -77,6 +77,47 @@ func (r *I18nRepository) DeleteAll(ctx context.Context, res di18n.Resource, id i
 	})
 }
 
+// BatchDelete 批量软删（§7.7 三档第 2 档）：单事务全成功或全失败。
+// 按 (res_type, field, lang) 分组、res_id IN ——每组一条 UPDATE，避免逐行往返。
+// 幂等：目标行已删/不存在计 0 行推进，不报错（返回值为实际推进行数）。
+func (r *I18nRepository) BatchDelete(ctx context.Context, keys []di18n.DelKey) (int64, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	var total int64
+	err := r.d.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		group := map[di18n.Resource]map[string]map[string][]int64{} // res → field → lang → ids
+		for _, k := range keys {
+			if group[k.Resource] == nil {
+				group[k.Resource] = map[string]map[string][]int64{}
+			}
+			if group[k.Resource][k.Field] == nil {
+				group[k.Resource][k.Field] = map[string][]int64{}
+			}
+			group[k.Resource][k.Field][string(k.Lang)] = append(group[k.Resource][k.Field][string(k.Lang)], k.ID)
+		}
+		for res, byField := range group {
+			for field, byLang := range byField {
+				for lang, ids := range byLang {
+					resTx := tx.Model(&po.SysI18nText{}).
+						Where("res_type = ? AND field = ? AND lang = ? AND deleted_at = 0 AND res_id IN ?",
+							res, field, lang, ids).
+						Update("deleted_at", gorm.Expr("UNIX_TIMESTAMP(NOW(3))*1000"))
+					total += resTx.RowsAffected
+					if resTx.Error != nil {
+						return resTx.Error
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("i18n.batch_delete: %w", err)
+	}
+	return total, nil
+}
+
 // ---------- 事务内小工具（同包内给业务仓储复用：读写译文并入主表事务） ----------
 
 // getManyTx 事务内批量读。

@@ -73,6 +73,7 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 	authAPI := v1.NewAuthAPI(svc.Auth)
 	userAPI := v1.NewSysUserAPI(svc.Users)
 	logAPI := v1.NewLoginLogAPI(svc.Logs)
+	i18nAPI := v1.NewI18nAPI(svc.I18n)
 
 	v1Group := r.Group("api/v1")
 	admin := v1Group.Group("admin")
@@ -109,6 +110,15 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		admin.PUT("menus/:id", menuAPI.Update)
 		admin.DELETE("menus/:id", menuAPI.Delete)
 		admin.POST("menus/sort", menuAPI.Sort)
+
+		// 统一译文表管理（docs 基础设施-i18n设计 §7.5 翻译接口；本族 camelCase；
+		// DELETE 不带 body：单条删除走 query，批量删除走 POST batch-delete）：
+		admin.GET("i18n/meta", i18nAPI.Meta)
+		admin.GET("i18n/texts", i18nAPI.Texts)
+		admin.PUT("i18n/texts", i18nAPI.Save)
+		admin.DELETE("i18n/texts", i18nAPI.DeleteText)
+		admin.POST("i18n/texts/batch-delete", i18nAPI.BatchDelete)
+		admin.GET("i18n/pending", i18nAPI.Pending)
 	}
 	return r
 }
