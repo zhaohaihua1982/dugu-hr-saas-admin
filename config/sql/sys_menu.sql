@@ -19,10 +19,19 @@ CREATE TABLE IF NOT EXISTS `sys_menu` (
     `deleted_at`  BIGINT       NOT NULL DEFAULT 0,
     `created_at`  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated_at`  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    `action_uniq` VARCHAR(64) GENERATED ALWAYS AS (
-        CASE WHEN action_code <> '' AND deleted_at = 0 THEN action_code ELSE NULL END
+    `action_uniq` VARCHAR(100) GENERATED ALWAYS AS (
+        CASE WHEN action_code <> '' AND deleted_at = 0 THEN CONCAT(parent_id, 0x1F, action_code) ELSE NULL END
+    ) STORED,
+    -- 同级唯一（v0.3）：仅“未删除”行参与；path 为空（目录/动作）不参与请求地址去重。
+    `menu_name_uniq` VARCHAR(100) GENERATED ALWAYS AS (
+        CASE WHEN deleted_at = 0 THEN CONCAT(parent_id, 0x1F, name) ELSE NULL END
+    ) STORED,
+    `menu_path_uniq` VARCHAR(176) GENERATED ALWAYS AS (
+        CASE WHEN deleted_at = 0 AND path <> '' THEN CONCAT(parent_id, 0x1F, path) ELSE NULL END
     ) STORED,
     PRIMARY KEY (`id`),
     KEY `idx_menu_parent` (`parent_id`, `sort`),
-    UNIQUE KEY `uk_action` (`action_uniq`)
+    UNIQUE KEY `uk_menu_action` (`action_uniq`),
+    UNIQUE KEY `uk_menu_name` (`menu_name_uniq`),
+    UNIQUE KEY `uk_menu_path` (`menu_path_uniq`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;

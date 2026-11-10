@@ -24,8 +24,8 @@ var (
 	// ErrHasChildren 存在子节点 → 30032（禁止删除；有子节点时也禁止改 type——
 	// 会破坏“动作是叶子”等不变式，与删除共用“先处理子节点”语义）。
 	ErrHasChildren = errors.New("menu: has children")
-	// ErrActionCodeTaken 动作编码已被占用（uk_action 全局唯一）→ 30033。
-	ErrActionCodeTaken = errors.New("menu: action_code taken")
+	// ErrSameLevelTaken 同级重复（v0.3 定稿）：同名/同请求地址/同权限点 → 30037。
+	ErrSameLevelTaken = errors.New("menu: same-level duplicate")
 	// ErrBadParams 菜单参数不合法 → 30034：字段超限、type/字段组合错误、
 	// 父节点无效（不存在/是动作/自己或后代当父）、树深超限等。
 	ErrBadParams = errors.New("menu: bad params")
@@ -64,19 +64,21 @@ const (
 	maxName   = 64
 	maxPath   = 128
 	maxIcon   = 64
-	maxCode   = 64
+	maxCode   = 64 // action_code VALUES(64) 与 DDL 同步
 	maxRemark = 255
 )
 
 // ---------- 聚合根 ----------
 
-// Menu 菜单聚合根。不变式：
-//   - 主表 name 非空（默认语言名，永远有显示兜底，docs §1.1）；
+// Menu 菜单聚合根。不变式（v0.3 同级唯一方案定稿）：
+//   - 所有节点三必填：name（默认语言名兜底）、**path（请求地址）**、
+//     **action_code（权限点）**；
+//   - 同级唯一（同一 parent 下）：name / path / action_code 互不重复
+//     （DB 生成列 uk_menu_name/uk_menu_path/uk_menu_action，软删行不参与）；
+//   - 按钮无独立路由：path 约定填 action_code 同值（同级天然唯一）；
 //   - names 的 key 必须是已注册语言；含默认语言时必须与 name 一致（应用层校验）；
-//   - type=3 动作：action_code 必填（全局唯一 uk_action）；其余类型 action_code 必空
-//     （非动作不占全局唯一码，防后续动作建不进来）；
-//   - 动作是叶子：任何节点都不能以动作节点为父；
-//   - parent 链不可成环、深度 ≤ MaxDepth；
+//   - 动作是叶子：任何节点都不能以动作节点为父；动作不能作根；
+//   - parent 链不可成环、dir/menu 链深度 ≤ MaxDepth（动作不计层）；
 //   - 翻译只涉及 name；path/component/icon/action_code 绝不翻译（docs §1.1）。
 type Menu struct {
 	ID         int64
@@ -122,12 +124,12 @@ func (m *Menu) Validate() error {
 		len(m.Icon) > maxIcon || len(m.Remark) > maxRemark {
 		return ErrBadParams
 	}
-	if m.Type == TypeAction {
-		if strings.TrimSpace(m.ActionCode) == "" {
-			return ErrBadParams // 动作必须带编码（30034）
-		}
-	} else if m.ActionCode != "" {
-		return ErrBadParams // 非动作不占全局唯一码
+	// v0.3：path / action_code 全部节点必填（同级唯一在 DB 生成列硬保证）
+	if strings.TrimSpace(m.Path) == "" {
+		return ErrBadParams // 请求地址不能为空（30034）
+	}
+	if strings.TrimSpace(m.ActionCode) == "" {
+		return ErrBadParams // 权限点不能为空（30034）
 	}
 	if len(m.ActionCode) > maxCode {
 		return ErrBadParams
@@ -149,12 +151,12 @@ func (m *Menu) Validate() error {
 
 // Repository sys_menu + sys_menu_i18n 的仓储端口。
 type Repository interface {
-	// Create 主表 + names 子表同事务新建；uk_action 冲突 → ErrActionCodeTaken。
+	// Create 主表 + names 子表同事务新建；同级重复（v0.3: name/path/action_code）→ ErrSameLevelTaken。
 	Create(ctx context.Context, m *Menu) error
 	// ByID 主表 + names 全集；未命中 (nil, nil)。
 	ByID(ctx context.Context, id int64) (*Menu, error)
 	// Save 主表内容字段更新（name/path/component/icon/visible/status/action_code/remark）；
-	// uk_action 冲突 → ErrActionCodeTaken。
+	// 同级重复 → ErrSameLevelTaken。
 	Save(ctx context.Context, m *Menu) error
 	// UpdateSort 仅更新排序（管理台“保存排序”批量调用）。
 	UpdateSort(ctx context.Context, id int64, sort int) error

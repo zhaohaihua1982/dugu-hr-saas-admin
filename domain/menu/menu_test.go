@@ -9,11 +9,12 @@ import (
 
 func baseMenu() *Menu {
 	return &Menu{
-		Name:    "用户管理",
-		Type:    TypeMenu,
-		Path:    "/system/user",
-		Visible: true,
-		Status:  StatusOn,
+		Name:       "用户管理",
+		Type:       TypeMenu,
+		Path:       "/system/user",
+		ActionCode: "system:user:page",
+		Visible:    true,
+		Status:     StatusOn,
 	}
 }
 
@@ -33,23 +34,29 @@ func TestValidateNameRequired(t *testing.T) {
 	}
 }
 
-func TestValidateActionRules(t *testing.T) {
-	// 动作必须带 code
+func TestValidateRequiredForAll(t *testing.T) {
+	// v0.3：path / action_code 全部节点必填（同级唯一在 DB 生成列硬保证）
 	m := baseMenu()
-	m.Type = TypeAction
 	m.Path = ""
 	if err := m.Validate(); err != ErrBadParams {
-		t.Fatalf("动作缺编码应报 ErrBadParams, got %v", err)
+		t.Fatalf("path 为空应报 ErrBadParams, got %v", err)
 	}
-	m.ActionCode = "system:user:remove"
-	if err := m.Validate(); err != nil {
-		t.Fatalf("动作带编码应合法: %v", err)
-	}
-	// 非动作不允许占用全局唯一码
 	m2 := baseMenu()
-	m2.ActionCode = "system:user:view"
+	m2.ActionCode = ""
 	if err := m2.Validate(); err != ErrBadParams {
-		t.Fatalf("非动作带编码应报 ErrBadParams, got %v", err)
+		t.Fatalf("action_code 为空应报 ErrBadParams, got %v", err)
+	}
+	// 各类型统一规则（目录/动作同口径）
+	for _, tt := range []Type{TypeDir, TypeMenu, TypeAction} {
+		m3 := baseMenu()
+		m3.Type = tt
+		if tt == TypeAction {
+			m3.Path = "system:user:remove" // 按钮 path 约定=action_code 同值
+			m3.ActionCode = "system:user:remove"
+		}
+		if err := m3.Validate(); err != nil {
+			t.Fatalf("type=%d 合法节点不应报错: %v", tt, err)
+		}
 	}
 }
 

@@ -37,6 +37,8 @@ const (
 	ErrorMenuBadParams       = 30034 // 菜单参数不合法（字段/父节点/环/深度）
 	ErrorMenuLangUnsupported = 30035 // 语言不被支持（names key 须为已注册语言）
 	ErrorMenuNameRequired    = 30036 // 默认语言名称（主表 name）不能为空
+	// 30033 已废弃：全局唯一改为同级唯一后并入 30037（保留编号防止前端旧映射错乱）
+	ErrorMenuSameLevelTaken = 30037 // 同级已存在相同名称/请求地址/权限点（v0.3）
 
 	// ---------- 路由兜底 ----------
 	ErrorNotFoundNoRoute = 404 // 接口不存在或请求方式不对（GET 访问了 POST 接口等）

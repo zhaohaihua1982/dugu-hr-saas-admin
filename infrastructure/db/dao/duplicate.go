@@ -20,8 +20,12 @@ func isDuplicate(err error) (string, bool) {
 		return "uk_username", true
 	case strings.Contains(mysqlErr.Message, "uk_mobile"):
 		return "uk_mobile", true
-	case strings.Contains(mysqlErr.Message, "uk_action"):
-		return "uk_action", true
+	case strings.Contains(mysqlErr.Message, "uk_menu_name"):
+		return "uk_menu_name", true
+	case strings.Contains(mysqlErr.Message, "uk_menu_path"):
+		return "uk_menu_path", true
+	case strings.Contains(mysqlErr.Message, "uk_menu_action"):
+		return "uk_menu_action", true
 	}
 	return "", true
 }

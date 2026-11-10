@@ -33,6 +33,7 @@ var msgMap = map[int]string{
 	ErrorMenuBadParams:       "菜单参数不合法",
 	ErrorMenuLangUnsupported: "语言不被支持（仅支持已注册语言）",
 	ErrorMenuNameRequired:    "菜单名称（默认语言译文）不能为空",
+	ErrorMenuSameLevelTaken:  "同一层级下已存在相同名称、请求地址或权限点",
 }
 
 // GetMsg 获取业务码对应文案，未知码回退通用 ERROR 文案。

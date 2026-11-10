@@ -44,7 +44,7 @@ func toDomainMenu(p *po.SysMenu) *menu.Menu {
 	}
 }
 
-// Create 主表 + names 子表同事务新建；唯一冲突归类（uk_action → ErrActionCodeTaken）。
+// Create 主表 + names 子表同事务新建；同级重复归类（30037，wrapMenuDup）。
 func (r *MenuRepository) Create(ctx context.Context, m *menu.Menu) error {
 	return r.d.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		p := &po.SysMenu{
@@ -208,14 +208,15 @@ func upsertI18n(tx *gorm.DB, ids authn.IDGenerator, menuID int64, names map[stri
 	}).Create(&rows).Error
 }
 
-// wrapMenuDup 唯一键冲突归一。
+// wrapMenuDup 唯一键冲突归一（v0.3：三个同级唯一键 → ErrSameLevelTaken → 30037）。
 func wrapMenuDup(err error, op string) error {
 	idx, dup := isDuplicate(err)
 	if !dup {
 		return fmt.Errorf("%s: %w", op, err)
 	}
-	if idx == "uk_action" {
-		return menu.ErrActionCodeTaken
+	switch idx {
+	case "uk_menu_name", "uk_menu_path", "uk_menu_action":
+		return menu.ErrSameLevelTaken
 	}
 	return fmt.Errorf("%s: %w", op, err)
 }

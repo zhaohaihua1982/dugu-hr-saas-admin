@@ -75,8 +75,8 @@ func CodeOf(err error) int {
 		return code.ErrorMenuNotFound
 	case errors.Is(err, dmenu.ErrHasChildren):
 		return code.ErrorMenuHasChildren
-	case errors.Is(err, dmenu.ErrActionCodeTaken):
-		return code.ErrorMenuActionCodeTaken
+	case errors.Is(err, dmenu.ErrSameLevelTaken):
+		return code.ErrorMenuSameLevelTaken
 	case errors.Is(err, dmenu.ErrLangUnsupported):
 		return code.ErrorMenuLangUnsupported
 	case errors.Is(err, dmenu.ErrNameRequired):
