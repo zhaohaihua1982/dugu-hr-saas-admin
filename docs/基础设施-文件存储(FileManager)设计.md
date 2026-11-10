@@ -1,9 +1,10 @@
 # 基础设施-文件存储（FileManager）设计
 
-> 版本 v1.1 · 范围：**统一文件存取能力**（本地 / 阿里云 OSS / MinIO 三 driver，按配置切换）
+> 版本 v1.2 · 范围：**统一文件存取能力**（本地 / 阿里云 OSS / MinIO 三 driver，按配置切换）
 > 创建：2026-11-10 · 最后修改：2026-11-10
-> 需求来源：① 支持按配置自动切换 存 本地/oss/minio；② 负责读取存储文件数据，可返回完整链接、path；③ 提供可删除的能力
+> 需求来源：① 支持按配置自动切换 存 本地/oss/minio；② 负责读取存储文件数据，可返回完整链接、path；③ 提供可删除的能力；④ Excel 上传后校验不通过要有标识（导入场景）
 > v1.1 变更：新增删除设计（§9）——软删/恢复/彻底删三层语义、逻辑 key 与物理 key 双层、引用计数保护、批量删除、失败补偿、签名 URL 撤销窗口；修正 v1.0 的下载路由前缀（`files/*key` 与 `files/:id` 在 gin 中冲突，改为 `files/content/*key`，白名单边界同时收窄）。
+> v1.2 变更：新增 §13 导入场景——内容校验失败的标识落在 `sys_import_batch`（不进 `sys_file`），校验期间 IncRef 保护文件，三种失败处置策略；后续章节号顺延。
 
 ---
 
@@ -19,8 +20,9 @@
 | 返回完整链接 | `URL(ctx, key) (string, error)` | 带时效的签名链接（默认私有读，见 §2.2） |
 | 返回 path | `Object.Key` / 响应字段 `path` | 持久化标识，**入库只存它** |
 | 删除 | `SoftDelete` / `Restore` / `Purge` 三层 | 默认进回收站，彻底删需二次确认（§9） |
+| 校验失败标识 | `sys_import_batch.status / error_detail` | **不在 FileManager 内**：内容校验结果挂在导入批次上（§13） |
 
-边界（明确不做，见 §14）：不做分片/断点续传、不做图片处理与缩略图、不做 CDN 刷新、不做"切换 driver 时自动搬历史文件"、不做对象版本控制。
+边界（明确不做，见 §15）：不做分片/断点续传、不做图片处理与缩略图、不做 CDN 刷新、不做"切换 driver 时自动搬历史文件"、不做对象版本控制。
 
 ---
 
@@ -227,21 +229,51 @@ const (
 ## 5. key 生成规则（domain/file/key.go）
 
 ```
-{biz}/{yyyy}/{MM}/{dd}/{snowflakeID}{ext}
-例：contract/2026/11/10/1849203918234567890.pdf
+{biz}/{yyyy}/{MM}/{dd}/{snowflakeID}-{safeName}{ext}
+例：contract/2026/11/10/1849203918234567890-劳动合同-张三.pdf
 ```
+
+- `{snowflakeID}`：**唯一性保证**，主体。免查重、免加锁，重名永远不可能覆盖。
+- `{safeName}`：**可读性后缀**，由用户原始文件名**清洗**而来（规则见下）。unique 由雪花 ID 保证，safeName 重复、缺失都无害。
+
+**safeName 清洗规则**（`domain/file/key.go` 内实现，输入 = 用户原始文件名去扩展名）：
+
+1. 剥离任何路径成分（取 `filepath.Base` 语义，防 `../../`）；
+2. 删除文件系统/URL 非法字符：`/ \ : * ? " < > |` 与控制字符、`\x00`；
+3. 空白字符（空格/换行/tab）折叠为单个 `-`；连续 `-` 合并；首尾 `-` 去掉；
+4. 结果为空（如原文件名全是符号）→ 后缀整体省略；
+5. 长度截断到 **60 个 rune**（UTF-8 下中文最多 180 字节，key 总长仍远小于 255 上限）；
+6. 扩展名不进 safeName——从原始名提取、小写化、白名单校验后单独拼接。
+
+落盘目录树实例（local driver，basePath = `./data/uploads`）：
+
+```
+data/uploads/
+├── avatar/2026/11/10/1849203918234567801-头像.png              ← 头像
+├── contract/2026/11/10/1849203918234567802-劳动合同-张三.pdf    ← 合同
+├── resume/2026/11/09/1849182277654321003-张三简历.pdf           ← 简历
+├── import/2026/11/10/1849203918234567804-花名册-1105最新版.xlsx ← 导入源文件
+├── export/2026/11/10/1849203918234567805-花名册-导出.xlsx       ← 导出结果
+├── site/2026/01/15/1800000000000000001-logo.png                ← 站点 logo（唯一公开前缀）
+└── trash/                                                      ← 回收站（软删且 strictRevoke 时）
+    ├── avatar/2026/11/10/1849203918234567801-头像.png          ← 原 key 结构整体平移
+    └── contract/2026/10/31/1848711111111111111-劳动合同.pdf
+```
+
+`sys_file.origin_name` 仍原样保留**未经清洗的完整原始文件名**（含可能被清洗掉的字符），下载时经 `Content-Disposition` 还给用户；key 里的 safeName 只是给存储控制台/目录浏览用的可读副本，两者不要求一致。
 
 四条约束，每条都对应一个真实事故：
 
 | 规则 | 防的事故 |
 |---|---|
-| **不使用用户原始文件名** | 路径穿越（`../../etc/passwd`）、同目录重名覆盖、中文/空格/`?`/`#` 在 URL 与对象存储里的编码地狱、Windows 保留名（`CON`、`NUL`） |
-| **雪花 ID 作为文件名主体** | 免查重、免加锁、天然有序（按 key 排序≈按时间排序）；与全项目 ID 生成方式一致 |
+| **原文件名必须清洗后才进 key（safeName）** | 路径穿越（`../../etc/passwd`）、中文/空格/`?`/`#` 在 URL 与对象存储里的编码地狱、Windows 保留名（`CON`、`NUL`） |
+| **雪花 ID 作为文件名主体** | 免查重、免加锁、天然有序（按 key 排序≈按时间排序）；与全项目 ID 生成方式一致；同日同名文件不会互相覆盖 |
 | **只保留扩展名，且小写化、白名单校验** | `.PHP`、`.jsp`、`.html`、`.svg` 是上传型 getshell / 存储型 XSS 的经典入口 |
 | **按 年/月/日 三级分片** | 本地文件系统单目录超过 ~10 万文件后 `readdir` 显著劣化；OSS 无所谓，但保持三 driver 同构，便于迁移与排查 |
 
 ```go
-var keyPattern = regexp.MustCompile(`^[a-z]+/\d{4}/\d{2}/\d{2}/[0-9]{1,20}\.[a-z0-9]{1,8}$`)
+var keyPattern = regexp.MustCompile(`^[a-z]+/\d{4}/\d{2}/\d{2}/[0-9]{1,20}(?:-[^/\\:*?"<>|\x00-\x1f]{1,180})?\.[a-z0-9]{1,8}$`)
+//                                                          └─ safeName 后缀可选（历史 key / 清洗后为空时省略）
 
 // ValidateKey 是所有读取/删除入口的第一道闸：拒绝空、拒绝绝对路径、拒绝 .. 与 \\、
 // 拒绝 URL 编码后的变体、拒绝不匹配 keyPattern 的字符串。
@@ -257,6 +289,9 @@ func ValidateKey(key string) error {
 	}
 	return nil
 }
+
+// NewKey 生成逻辑 key：biz 白名单校验 → 雪花 ID → safeName 清洗 → 扩展名白名单校验。
+func NewKey(biz Biz, originName string) (string, error) { /* 见 domain/file/key.go */ }
 
 // TrashKey 逻辑 key → 回收站物理 key（§9.2）。幂等：已是 trash/ 前缀则原样返回。
 func TrashKey(logicalKey string) string { return trashPrefix + logicalKey }
@@ -365,7 +400,7 @@ POST /api/v1/admin/files (multipart)
   → handler 取 file header（大小先按 maxSizeMB 挡，不等读完）
   → 嗅探前 512 字节定 Content-Type（不信任客户端声明）
   → 扩展名白名单 + MIME 白名单双重校验
-  → domain.NewKey(biz, ext) 生成 key
+  → domain.NewKey(biz, originName) 生成 key（内部：雪花 ID + safeName 清洗 + 扩展名白名单）
   → store.Put(ctx, PutInput{...})        // 流式写入，io.Copy 不落内存
   → sys_file 落一行（file_key=storage_key=key, uploader_id, ref_count=0）
   → 返回 {id, path, url, size, contentType}
@@ -604,7 +639,127 @@ CREATE TABLE sys_file (
 
 ---
 
-## 13. 实施分期与验收
+## 13. 导入场景：Excel 校验失败的标识与处置
+
+需求："Excel 上传后，如果校验不通过，还得有标识。" 这个需求要先**拆成两层**，因为它们的拦截时机、责任方、落库位置完全不同：
+
+| 层 | 拦截时机 | 责任方 | 失败表现 |
+|---|---|---|---|
+| **格式校验** | 上传请求还没处理完 | FileManager（§8.1） | 40012，**文件根本进不了系统**，无任何记录 |
+| **内容校验** | 下载解析之后 | 导入业务（`application/import`） | 批次 `status=failed` + 错误行明细，**文件保留** |
+
+扩展名是 `.xlsx` 但内容是伪造的（MIME 嗅探不通过）→ 格式层就死了，这一层 v1.0 就有。而"第 5 行手机号格式不对、第 8 行部门不存在"这种，**只有把 Excel 读出来解析才知道**——它校验的是 Excel 里的业务数据，不是文件本身。这层是 v1.2 补齐的。
+
+### 13.1 标识为什么不加进 `sys_file`
+
+直觉做法是给 `sys_file` 加个 `status`（校验失败/已导入）。**明确拒绝**，两个理由：
+
+1. **`sys_file` 的每一列都必须对全部 biz 成立**。"校验失败"对头像、合同、站点 logo 意味着什么？没有意义。一旦开始为某个 biz 加业务状态列，表就会慢慢变成所有业务的杂物抽屉——这正是 §2.1"库内存 key 不存 URL"要防的同一种腐化；
+2. **校验结果是"导入批次"的事实，不是"文件"的事实**。同一个文件理论上可以被两个导入批次引用（上传一次、建两个批次），批次 A 校验失败、批次 B 通过——文件该标什么？没法标。
+
+正确落点：**`sys_import_batch`，以 `file_id` 关联 `sys_file`**。文件列表页（按 `sys_file` 查）看到的是干净的原始文件；导入列表页（按批次查）才显示失败标识。想在文件列表也带失败角标，接口 join 批次表即可，不动表结构。
+
+### 13.2 `sys_import_batch` 表设计（P1）
+
+```sql
+CREATE TABLE sys_import_batch (
+  id           BIGINT      NOT NULL COMMENT '雪花ID',
+  file_id      BIGINT      NOT NULL COMMENT '关联 sys_file.id（该文件 biz=import）',
+  import_type  VARCHAR(32) NOT NULL COMMENT '导入目标业务域 employee/attendance/...（值域开放，随业务增长；区别于 sys_file.biz 的固定枚举，见 13.2.1）',
+  status       VARCHAR(16) NOT NULL COMMENT 'parsed/validated/failed/imported',
+  total_rows   INT         NOT NULL DEFAULT 0,
+  ok_rows      INT         NOT NULL DEFAULT 0,
+  error_rows   INT         NOT NULL DEFAULT 0,
+  error_detail MEDIUMTEXT  NULL COMMENT '[{"row":5,"col":"mobile","code":30025},...]',
+  created_by   BIGINT      NOT NULL DEFAULT 0,
+  created_at   DATETIME(3) NOT NULL,
+  finished_at  DATETIME(3) NULL,
+  PRIMARY KEY (id),
+  KEY idx_file (file_id),
+  KEY idx_type_created (import_type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='导入批次（校验结果与失败标识）';
+```
+
+#### 13.2.1 `import_type` ≠ `sys_file.biz`（容易看混，特意说明）
+
+两个 `biz` 长得像但**粒度和值域都不同**，改名 `import_type` 就是为了断掉混淆：
+
+| | `sys_file.biz` | `sys_import_batch.import_type` |
+|---|---|---|
+| 回答的问题 | 这个文件**是什么用途** | 这批数据**导入到哪个业务** |
+| 值域 | **封闭枚举**（7 个，定义在 `domain/file.Biz`）：avatar / resume / contract / import / export / site / temp | **开放值域**，随业务增长：employee / attendance / salary / ... |
+| 谁维护 | 代码（加值要改 domain 常量） | 业务模块（新增导入功能时自己定义） |
+| 影响什么 | key 前缀（`import/2026/...`）、PublicURL 权限、删除策略 | 校验规则、Excel 模板、用哪个导入处理器 |
+
+关系链：上传导入文件 → `sys_file.biz = 'import'`，key 前缀 `import/...`；建批次 → `sys_import_batch.import_type = 'employee'`。**一个文件（biz=import）对应一个批次（本期 1:1）**，批次通过 `file_id` 关联拿文件信息（origin_name、签名 URL）。
+
+为什么不合并成细粒度枚举（把 `employee`/`attendance` 直接塞进 `sys_file.biz`）：`Biz` 枚举会随导入功能无限增长（每加一种导入就改 domain 常量），且 key 空间从统一的 `import/` 前缀裂成 `employee/`、`attendance/`...，"导入类文件"这个归类就没了——到期清理、格式校验、按用途统计都变得零散。**存储维度用粗枚举，业务维度用细值域，各归各的表。**
+
+#### 13.2.2 字典化取舍（配套 `config/sql/sys_dict_init.sql`）
+
+判断标准沿用菜单文档 §1.1："这份文案谁维护？"
+
+| 字段 | 走哪里 | 理由 |
+|---|---|---|
+| `sys_import_batch.import_type` | **字典** `import_type`（已启用） | 开放值域，新导入功能插一条字典项即出现下拉，无需发版 |
+| `sys_file.biz`（7 个） | 前端语言包（i18n key `file.biz.*`） | 封闭代码枚举，文案归开发随代码发版；字典本期单语，塞进去会造成英文界面 + 中文下拉 |
+| `sys_file.driver`、文件状态（`deleted_at`/`purged_at` 派生）、`sys_import_batch.status` | 前端语言包 | 同上，封闭枚举；`file_status` 非库字段，是两列派生态 |
+
+值域校验**永远以代码常量为准**，字典/语言包只管展示与下拉取值——运营在字典里加的项后端不会接受，安全兜底在 domain 层。`sys_dict_init.sql` 附有"统一字典化"可选段（默认注释），若决定所有下拉统一走字典，启用它并同步排期字典 i18n 子表。
+
+状态机与文件生命周期的对应关系：
+
+```
+上传完成 ──→ parsed（行数已统计）
+        ├─→ validated（全部通过）──→ imported
+        └─→ failed（error_rows>0，error_detail 非空）★ 这就是"校验不通过的标识"
+```
+
+关键约定：
+
+- **`error_detail` 里的失败原因存错误码**（如 `"code": 30025`），不存中文文案——前端拿到后走 i18n 渲染，与 §3.3"用户可见文案不散落在代码里"一致；`col` 存列名字段，行号 `row` 从 2 起（Excel 表头占第 1 行）；
+- **失败批次不覆盖、不重试**：修正后重新上传 = 新文件 + 新批次。导入历史是审计事实，覆盖历史等于毁灭证据；
+- `total/ok/error` 三行数字在解析时一次算完，**不做"边导边记"**——HR 导入是千行级，一次事务内全量校验再决定是否入库，比"导了 800 行发现第 801 行坏了"好得多（后者需要回滚或部分导入语义，复杂度爆炸）。**全过才导，一错全不导**，默认原子。
+
+### 13.3 校验失败后，文件怎么办（接 §9 删除语义）
+
+三种策略，默认 A：
+
+| 策略 | 动作 | 适用 |
+|---|---|---|
+| **A. 保留 + 引用计数保护（默认）** | 建批次时 `IncRef`；批次状态落定（failed/validated/imported）且用户确认不再需要、或超过保留期（建议 7 天）时 `DecRef` → `ref_count=0` 后才允许 `SoftDelete` → 30 天后到期清理 | 所有场景。文件是"现场证据"：用户 disput"我传的不是这个文件"时，原始文件就是唯一物证 |
+| **B. 立即软删** | 导入界面提供"删除重传"按钮 → `SoftDelete` | 明显传错文件的场景，用户主动触发 |
+| **C. 校验失败即 Purge** | 不推荐 | — |
+
+**校验期间 `IncRef` 是硬要求**：解析可能耗时数秒，期间若另一个管理员把文件删了，解析协程拿到的是半途消失的对象（local 是 404，OSS 是 NoSuchKey）。IncRef → ref_count>0 → §9.3 的删除保护自动生效，不需要 FileManager 侧新增任何"解析锁"机制。这正是 v1.1 引用计数设计的第一个真实收益。
+
+**C 为什么不推荐**：purge 不可逆且无物证。错误明细只说"第 5 行手机号格式错"，但"第 5 行原来的内容是什么"只有原始文件能回答。宁可多留 7 天垃圾，不留一笔糊涂账。
+
+### 13.4 接口与前端标识
+
+```
+GET /api/v1/admin/imports?importType=employee&status=failed&page=1&pageSize=20
+  → {list: [{id, biz, status, totalRows, okRows, errorRows,
+             fileName: "花名册-1105.xlsx",     ← sys_file.origin_name
+             fileUrl: "签名URL",               ← 现签，可下载原始文件
+             errorDetail: [{row, col, code}],  ← 首页错误可选内联，明细分页另拉
+             createdAt}], total, page, pageSize}
+
+GET /api/v1/admin/imports/:id/errors?page=1   ← 错误行明细分页（千行 Excel 错一半时不能一次吐完）
+```
+
+前端标识：导入记录列表 `status=failed` → 红色 Tag"校验失败 · 23 行错误"，点击展开错误明细（行号 + 列 + 本地化文案），并提供两个动作：下载原始文件（对账）、重新上传（新批次）。
+
+### 13.5 验收补充（并入 §14 P1）
+
+- 上传含错误行的 Excel → 批次 `status=failed`、`error_detail` 含行号与错误码 → 原始文件仍可签名下载；
+- 批次未 `DecRef` 时对文件 `SoftDelete` → 40015；`DecRef` 后 → 成功进回收站；
+- `error_detail` 里的文案在前端按语言包渲染，切语言后错误原因跟随变化；
+- 全过才导：第 N 行校验失败时，前 N-1 行**不产生任何数据写入**。
+
+---
+
+## 14. 实施分期与验收
 
 **P0（可用：上传 + 读取 + 软删）**
 1. `domain/file`：`Store` / `Object` / `Biz` / `NewKey` / `ValidateKey` / `TrashKey` / 哨兵；
@@ -625,7 +780,8 @@ CREATE TABLE sys_file (
 8. 同一套验收脚本（含删除/恢复/purge）在 local/oss/minio 三份配置下各跑一遍——**这是"可切换"唯一的验收标准**；
 9. Redis tombstone（local 吊销）+ `strictRevoke` 生效验证：软删后立刻访问原 url 必须 404（三个 driver 都要过）；
 10. 补偿任务 + 到期清理任务；`sys_config` 的 `site_logo`/`site_bg` 改为存 key；
-11. 前端：文件列表 / 回收站 / 恢复 / 批量删除 / 二次确认弹窗（purge 必须输入"确认删除"或勾选不可逆提示）。
+11. `sys_import_batch` 表 + 导入批次接口（§13.4：列表/错误明细分页），校验失败标识与 `IncRef` 保护落地；
+12. 前端：文件列表 / 回收站 / 恢复 / 批量删除 / 二次确认弹窗（purge 必须输入"确认删除"或勾选不可逆提示）；导入记录列表含"校验失败"标识与错误明细展开。
 
 **P2（增强）**
 12. `readFallback` 只读回源；`cmd/filemigrate` 迁移工具；
@@ -642,7 +798,7 @@ CREATE TABLE sys_file (
 
 ---
 
-## 14. 明确不做
+## 15. 明确不做
 
 - 分片上传 / 断点续传（>100MB 场景出现时再谈，届时 local 与 OSS 的语义差异要重新对齐）；
 - 图片压缩、缩略图、水印（应由上传侧或 CDN 图片处理承担）；
@@ -654,9 +810,11 @@ CREATE TABLE sys_file (
 
 ---
 
-## 15. 变更记录
+## 16. 变更记录
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v1.0 | 2026-11-10 | 初稿：三 driver 端口定义、key 规范、签名 URL、安全清单、4001x 错误码、分期实施 |
 | v1.1 | 2026-11-10 | 新增 §9 删除设计：三层语义（软删/恢复/彻底删）、逻辑 key 与物理 key 双层、引用计数、批量删除部分成功语义、签名撤销窗口与三档对策、失败补偿与到期清理、审计对齐 `sys_oper_log`；`sys_file` 表从 P1 提前为 P0 并补 `storage_key`/`purged_at`/`ref_count`/`purge_attempts`；`Store` 增加 `Move` 与可选 `Lister`；下载路由改为 `files/content/*key`（修复 gin 通配与参数路由冲突，白名单边界收窄）；错误码扩至 40017 |
+| v1.2 | 2026-11-10 | 新增 §13 导入场景：内容校验失败的标识落 `sys_import_batch`（明确拒绝加进 `sys_file`，理由两条）、批次状态机、`error_detail` 存错误码走 i18n、"全过才导"原子导入、校验期 `IncRef` 保护（引用计数的首个真实收益）、三种失败处置策略（默认保留+延迟清理）；P1 增加 `sys_import_batch` 与导入接口；后续章节号顺延。批次业务域字段命名 `import_type`（开放值域），与 `sys_file.biz`（封闭枚举）区分，见 §13.2.1；字典化取舍见 §13.2.2（`import_type` 走字典，封闭枚举走语言包），初始化 SQL 落 `config/sql/sys_dict_init.sql` |
+| v1.3 | 2026-11-10 | key 格式升级：`{snowflakeID}{ext}` → `{snowflakeID}-{safeName}{ext}`，清洗后的原文件名进 key 提升存储侧可读性（OSS 控制台/本地目录肉眼可辨）。清洗六规则（剥路径成分、删非法字符、空白折叠、空则省略、60 rune 截断、扩展名单列）；唯一性仍由雪花 ID 保证，safeName 重复/缺失无害；`ValidateKey` 正则放宽为后缀可选（兼容无后缀 key），`NewKey(biz, originName)` 签名变更；`sys_file.origin_name` 仍存未清洗原始名，`Content-Disposition` 行为不变 |

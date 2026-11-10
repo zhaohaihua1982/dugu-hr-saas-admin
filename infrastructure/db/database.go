@@ -36,6 +36,10 @@ func Open(debug bool) (*DB, error) {
 	dsn.Net = "tcp"
 	dsn.Addr = mConfig.DbHost + ":" + mConfig.DbPort
 	dsn.DBName = mConfig.DbName
+	// 时区：驱动默认 loc=UTC——写入前把 time.Time 转成 UTC 格式化落库，
+	// 北京时间会凭空差 8 小时（且 DATETIME 列无时区语义，纯数据损坏）。
+	// 显式与“应用/MySQL 服务器本地时区（Asia/Shanghai）”一致，跨读写方向同时修正。
+	dsn.Loc = time.Local
 	dsn.ParseTime = true
 	dsn.Timeout = 3 * time.Second
 	dsn.ReadTimeout = 10 * time.Second
