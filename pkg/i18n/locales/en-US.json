@@ -3,7 +3,6 @@
   "201": "Operation successful",
   "400": "Invalid parameters",
   "500": "Internal error, please try again later",
-
   "30001": "Session expired, please sign in again",
   "30002": "Please sign in first",
   "30010": "Incorrect account or password",
@@ -15,7 +14,6 @@
   "30016": "Verification code expired, please request a new one",
   "30017": "Too many requests, please try again later",
   "30018": "Failed to send SMS, please try again later",
-
   "30021": "Account already exists",
   "30022": "Mobile number is already bound to another account",
   "30023": "Account not found",
@@ -23,7 +21,6 @@
   "30025": "Invalid account or mobile number format",
   "30026": "Built-in super admin account is protected, operation denied",
   "30027": "You cannot perform this operation on your own account",
-
   "30031": "Menu not found",
   "30032": "This menu has child nodes; process them first",
   "30033": "Action code (action_code) is already taken",
@@ -31,10 +28,9 @@
   "30035": "Language not supported (registered languages only)",
   "30036": "Menu name (default-language name) is required",
   "30037": "Duplicate name or path within the same level, or code already exists for this type",
-
+  "30038": "Resource or field not registered for translation",
+  "30039": "Translation text too long or contains illegal characters",
   "404": "Endpoint not found or wrong HTTP method (POST/GET are strictly separated)",
-
   "40001": "Database error, please retry",
-
   "sms.sent": "Sent"
 }

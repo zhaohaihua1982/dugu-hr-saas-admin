@@ -3,8 +3,9 @@
 // 标准DDD分层约束：零框架依赖（不 import gin/gorm/redis/config）。
 // pkg/i18n 是纯标准库语言标签工具，被 domain 引用是设计稿（三模块设计 §1.1/§7）
 // 的明确约定：语言集合从 i18n.Registered() 派生。
-// 存储（主表 sys_menu + 译文子表 sys_menu_i18n）以 Repository 端口定义在此，
-// 由 infrastructure/db/dao 实现（DIP）。
+// 名称译文存统一翻译表 sys_i18n_text（机制见《基础设施-数据文案多语言(i18n)设计.md》），
+// 端口如何读译文是仓储实现细节；主表 sys_menu 的 Repository 定义在此，由
+// infrastructure/db/dao 实现（DIP）。
 package menu
 
 import (
@@ -151,7 +152,7 @@ func (m *Menu) Validate() error {
 
 // ---------- 仓储端口（由 infrastructure/db/dao 实现） ----------
 
-// Repository sys_menu + sys_menu_i18n 的仓储端口。
+// Repository sys_menu 主表（名称译文存统一表 sys_i18n_text，实现细节在 infra）的仓储端口。
 type Repository interface {
 	// Create 主表 + names 子表同事务新建；同级重复（name/path）或 code 同类重复 → ErrSameLevelTaken。
 	Create(ctx context.Context, m *Menu) error

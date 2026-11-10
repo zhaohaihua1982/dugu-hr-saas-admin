@@ -1,17 +1,20 @@
--- 业务参考: docs/系统管理-菜单·配置·字典设计.md §3/§6（字典两表）、
---           docs/基础设施-文件存储(FileManager)设计.md §13.2.1（biz 双字段澄清与字典化取舍）
--- 前置: sys_dict_type / sys_dict_item 建表须先执行（见菜单·配置·字典设计文档 §6）。
--- 幂等: INSERT IGNORE，依赖唯一键 (code,deleted_at) / (type_id,value,deleted_at)——重复执行自动跳过；
+-- 业务参考: docs/系统管理-字典(sys_dict)设计.md §1.2（两表 DDL）/§6（本文件约定）/§0（字典化判据）
+--           docs/基础设施-数据文案多语言(i18n)设计.md §2（sys_i18n_text 表结构与索引）
+--           docs/基础设施-文件存储(FileManager)设计.md §13.2.2（biz 双字段澄清与字典化取舍）
+-- 前置: ① config/sql/sys_i18n_text.sql（公共译文表，已交付）；② sys_dict_type / sys_dict_item 建表（见字典设计文档 §1.2，config/sql/sys_dict.sql 待交付）。
+-- 幂等: INSERT IGNORE，依赖唯一键 (code,deleted_at) / (type_id,value,deleted_at) / (res_type,res_id,field,lang,deleted_at)——重复执行自动跳过；
 --       用 IGNORE 而非 ON DUPLICATE KEY UPDATE，避免覆盖运营在后台改过的 label/sort/status。
 -- ID 约定: seed 固定段 9000000000000001 起（9e15）。
 --       bwmarrin/snowflake 生成的 ID 在 1e17+ 量级，永不冲突；段内按类型分块，见各行注释。
+--       多语言译文用 9000000000000031 起（见第 2 段），与类型/项段位区分。
 --
--- 字典化取舍（FileManager §13.2.1）：判断标准只有一句——这份文案谁维护？
+-- 字典化取舍（FileManager §13.2.2）：判断标准只有一句——这份文案谁维护？
 --   ✅ 走字典：值域随业务增长的开放枚举（import_type）——新增导入功能插一条即可，无需发版；
 --   ❌ 不走字典：封闭代码枚举（file.biz / file.driver / 文件状态 / import_batch.status）——
---      文案归开发、随代码发版，走前端语言包（i18n key，如 file.biz.avatar），天然三语；
---      字典本期单语，塞进去会造成"英文界面 + 中文下拉"的不一致（菜单文档 §3 已知取舍）。
---   若决定统一字典化，启用文末第 2 段（默认注释）。
+--      文案归开发、随代码发版，走前端语言包（i18n key，如 file.biz.avatar）：三种语言随代码一次性就位，
+--      不需要运营为每个枚举补译文，也不会因为漏翻而在界面露码。
+--      （字典 v1.1 起已支持 label 多语言，"英文界面 + 中文下拉"不再是拒绝理由；拒绝的理由是维护归属。）
+--   若决定统一字典化，启用文末第 3 段（默认注释）。
 
 -- ========== 1. 走字典：import_type 导入业务域（开放值域，默认启用） ==========
 
@@ -28,9 +31,22 @@ VALUES
     -- 扩展方式：新导入功能上线时按 sort 递增加项，例如——
     -- (9000000000000012, 9000000000000001, '考勤记录', 'attendance', 20, 0, '考勤导入上线时改为启用'),
 
--- ========== 2. （可选，默认注释）封闭枚举统一字典化 ==========
--- 启用前提：接受"下拉项本期单语"；值域校验仍以代码为准（domain/file.Biz 等常量），
+-- ========== 2. 字典项多语言译文（v1.2 起统一落 sys_i18n_text，默认启用） ==========
+-- 只翻 label；value 永远单值。主表 label 已是默认语言（zh-CN），此处显式补齐三语。
+-- 资源标识：res_type='dict_item'，res_id=字典项 id，field='label'。
+-- 缺译不报错：读取时回退主表 label；新增语言后可随时补行（INSERT IGNORE 幂等）。
+
+INSERT IGNORE INTO `sys_i18n_text`
+    (`id`, `res_type`, `res_id`, `field`, `lang`, `content`)
+VALUES
+    (9000000000000031, 'dict_item', 9000000000000011, 'label', 'zh-CN', '员工花名册'),
+    (9000000000000032, 'dict_item', 9000000000000011, 'label', 'zh-TW', '員工名冊'),
+    (9000000000000033, 'dict_item', 9000000000000011, 'label', 'en-US', 'Employee Roster');
+
+-- ========== 3. （可选，默认注释）封闭枚举统一字典化 ==========
+-- 启用前提：接受这些枚举的文案由运营维护；值域校验仍以代码为准（domain/file.Biz 等常量），
 -- 字典加值不会让后端接受新枚举，安全；字典删/停用项只影响前端下拉展示。
+-- 注意：启用后这些文案要与前端语言包 file.bizOptions.* 保持单一来源，避免两处都改、两处不一致。
 
 -- INSERT IGNORE INTO `sys_dict_type` (`id`, `code`, `name`, `status`, `remark`) VALUES
 --     (9000000000000021, 'file_biz',      '文件用途', 1, 'sys_file.biz 固定枚举；值域以 domain/file.Biz 代码为准，字典仅用于展示与筛选'),

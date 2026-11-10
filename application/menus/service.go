@@ -10,6 +10,7 @@ import (
 
 	"dugu-hr-saas-admin/application/types"
 	authn "dugu-hr-saas-admin/domain/authn"
+	di18n "dugu-hr-saas-admin/domain/i18n"
 	dmenu "dugu-hr-saas-admin/domain/menu"
 	"dugu-hr-saas-admin/pkg/code"
 	"dugu-hr-saas-admin/pkg/i18n"
@@ -135,8 +136,12 @@ func codeOf(err error) int {
 		return code.ErrorMenuHasChildren
 	case errors.Is(err, dmenu.ErrSameLevelTaken):
 		return code.ErrorMenuSameLevelTaken
-	case errors.Is(err, dmenu.ErrLangUnsupported):
+	case errors.Is(err, dmenu.ErrLangUnsupported), errors.Is(err, di18n.ErrLangUnsupported):
 		return code.ErrorMenuLangUnsupported
+	case errors.Is(err, di18n.ErrTargetUnregistered):
+		return code.ErrorI18nTarget
+	case errors.Is(err, di18n.ErrContentInvalid):
+		return code.ErrorI18nContent
 	case errors.Is(err, dmenu.ErrNameRequired):
 		return code.ErrorMenuNameRequired
 	case errors.Is(err, dmenu.ErrBadParams):

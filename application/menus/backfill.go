@@ -12,7 +12,8 @@ import (
 	"dugu-hr-saas-admin/pkg/i18n"
 )
 
-// traditionalName 存量繁体补齐条目：path 是唯一锚点（运营可能改名，不用 name 定位，docs §4）。
+// 存量繁体补齐条目：path 是唯一锚点（运营可能改名，不用 name 定位，docs §4）。
+// 写入目标 = 统一翻译表 sys_i18n_text（res_type='menu'、field='name'；v0.6 起）。
 type traditionalName struct {
 	Path string
 	TW   string
@@ -39,7 +40,7 @@ var traditionalNames = []traditionalName{
 
 // BackfillTraditionalNames 幂等补齐 zh-TW 译文。
 // 返回 (补齐数, 跳过数(已有非空 zh-TW)、节点缺失数, 错误)。
-// 只动 sys_menu_i18n 的 zh-TW；不碰 zh-CN/en-US、主表 name、path/code/id_path（docs §4）。
+// 只动统一翻译表（res_type='menu'/field='name'）的 zh-TW；不碰 zh-CN/en-US、主表 name、path/code/id_path（docs §4）。
 func (s *Service) BackfillTraditionalNames(ctx context.Context) (filled, skipped, missing int, err error) {
 	lang, ok := i18n.ParseLang("zh-TW")
 	if !ok {

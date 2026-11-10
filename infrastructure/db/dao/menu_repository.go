@@ -1,4 +1,5 @@
-// menu_repository —— menu.Repository 的 MySQL 实现（主表 sys_menu + 译文子表 sys_menu_i18n）。
+// menu_repository —— menu.Repository 的 MySQL 实现（主表 sys_menu；
+// 名称译文存统一翻译表 sys_i18n_text，经 I18nRepository 读写，v0.6 起不再用 sys_menu_i18n）。
 package dao
 
 import (
@@ -8,9 +9,9 @@ import (
 	"strconv"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"dugu-hr-saas-admin/domain/authn"
+	di18n "dugu-hr-saas-admin/domain/i18n"
 	"dugu-hr-saas-admin/domain/menu"
 	"dugu-hr-saas-admin/infrastructure/db"
 	"dugu-hr-saas-admin/infrastructure/db/po"
@@ -23,12 +24,28 @@ var _ menu.Repository = (*MenuRepository)(nil)
 type MenuRepository struct {
 	d   *db.DB
 	ids authn.IDGenerator
+	t   *I18nRepository // 名称译文走统一翻译表（docs 基础设施-i18n设计 §8：切换读/写路径）
 }
 
-// NewMenuRepository 构造。
+// NewMenuRepository 构造（统一翻译仓储内部装配，调用方签名不变）。
 func NewMenuRepository(d *db.DB, ids authn.IDGenerator) *MenuRepository {
-	return &MenuRepository{d: d, ids: ids}
+	return &MenuRepository{d: d, ids: ids, t: NewI18nRepository(d, ids)}
 }
+
+// nameTexts 把菜单的 names（lang→名）转成统一表 Save 的 {field:{lang:content}} 形状。
+func nameTexts(names map[string]string) map[string]map[di18n.Lang]string {
+	if len(names) == 0 {
+		return nil
+	}
+	langs := make(map[di18n.Lang]string, len(names))
+	for l, v := range names {
+		langs[di18n.Lang(l)] = v
+	}
+	return map[string]map[di18n.Lang]string{menuNameField: langs}
+}
+
+// menuNameField 菜单的可翻字段常量（白名单 domain/i18n.ResMenu 内登记）。
+const menuNameField = "name"
 
 // toDomainMenu PO → 聚合（不含 names；names 由 NamesByIDs 批量补）。
 func toDomainMenu(p *po.SysMenu) *menu.Menu {
@@ -70,7 +87,7 @@ func (r *MenuRepository) Create(ctx context.Context, m *menu.Menu) error {
 		if err := tx.Create(p).Error; err != nil {
 			return wrapMenuDup(err, "menu.create")
 		}
-		if err := upsertI18n(tx, r.ids, m.ID, m.Names); err != nil {
+		if err := saveTx(tx, r.ids, di18n.ResMenu, m.ID, nameTexts(m.Names)); err != nil {
 			return err
 		}
 		m.CreatedAt, m.UpdatedAt = p.CreatedAt, p.UpdatedAt
@@ -167,17 +184,15 @@ func joinIDPath(parentPath string, id int64) string {
 	return parentPath + "/" + strconv.FormatInt(id, 10)
 }
 
-// UpsertNames 覆盖所传语言（未传不动）：uk_menu_i18n 冲突 → 活行改名。
+// UpsertNames 覆盖所传语言（未传不动）；空串 = 软删该语言译文（统一表 Save 语义）。
 func (r *MenuRepository) UpsertNames(ctx context.Context, mid int64, names map[string]string) error {
 	if len(names) == 0 {
 		return nil
 	}
-	return r.d.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return upsertI18n(tx, r.ids, mid, names)
-	})
+	return r.t.Save(ctx, di18n.ResMenu, mid, nameTexts(names))
 }
 
-// Delete 软删主表 + 译文子表（同事务）。
+// Delete 软删主表 + 统一翻译表对应译文（同一事务，docs 基础设施-i18n设计 §5）。
 func (r *MenuRepository) Delete(ctx context.Context, mid int64) error {
 	return r.d.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		stmt := "UNIX_TIMESTAMP(NOW(3))*1000"
@@ -186,9 +201,7 @@ func (r *MenuRepository) Delete(ctx context.Context, mid int64) error {
 			Update("deleted_at", gorm.Expr(stmt)).Error; err != nil {
 			return fmt.Errorf("menu.delete: %w", err)
 		}
-		if err := tx.Model(&po.SysMenuI18n{}).
-			Where("menu_id = ? AND deleted_at = 0", mid).
-			Update("deleted_at", gorm.Expr(stmt)).Error; err != nil {
+		if err := deleteAllTx(tx, di18n.ResMenu, mid); err != nil {
 			return fmt.Errorf("menu.delete_i18n: %w", err)
 		}
 		return nil
@@ -222,43 +235,25 @@ func (r *MenuRepository) ListAll(ctx context.Context) ([]menu.Menu, error) {
 	return out, nil
 }
 
-// NamesByIDs 批量取译文。
+// NamesByIDs 批量取全部语言的 name 译文（走统一翻译表 GetMany；详情/编辑页回填用）。
 func (r *MenuRepository) NamesByIDs(ctx context.Context, ids []int64) (map[int64]map[string]string, error) {
-	out := make(map[int64]map[string]string, len(ids))
-	if len(ids) == 0 {
-		return out, nil
-	}
-	var rows []po.SysMenuI18n
-	err := r.d.WithContext(ctx).
-		Where("deleted_at = 0 AND menu_id IN ?", ids).
-		Find(&rows).Error
+	many, err := r.t.GetMany(ctx, di18n.ResMenu, ids, []string{menuNameField}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("menu.names_by_ids: %w", err)
+		return nil, err
 	}
-	for _, row := range rows {
-		if out[row.MenuID] == nil {
-			out[row.MenuID] = make(map[string]string)
+	out := make(map[int64]map[string]string, len(many))
+	for id, byField := range many {
+		byLang := byField[menuNameField]
+		if len(byLang) == 0 {
+			continue
 		}
-		out[row.MenuID][row.Lang] = row.Name
+		names := make(map[string]string, len(byLang))
+		for l, v := range byLang {
+			names[string(l)] = v
+		}
+		out[id] = names
 	}
 	return out, nil
-}
-
-// ---------- 事务内 i18n 小工具 ----------
-
-// upsertI18n 对已归一化 langs 做 upsert：命中 uk_menu_i18n 活行 → 改名；否则插入。
-func upsertI18n(tx *gorm.DB, ids authn.IDGenerator, menuID int64, names map[string]string) error {
-	if len(names) == 0 {
-		return nil
-	}
-	rows := make([]po.SysMenuI18n, 0, len(names))
-	for l, v := range names {
-		rows = append(rows, po.SysMenuI18n{ID: ids.New(), MenuID: menuID, Lang: l, Name: v})
-	}
-	return tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "menu_id"}, {Name: "lang"}},
-		DoUpdates: clause.AssignmentColumns([]string{"name"}),
-	}).Create(&rows).Error
 }
 
 // wrapMenuDup 唯一键冲突归一（v0.3：三个同级唯一键 → ErrSameLevelTaken → 30037）。

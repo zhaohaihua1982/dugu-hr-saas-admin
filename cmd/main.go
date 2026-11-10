@@ -122,7 +122,12 @@ func assemble(ctx context.Context) (*assembled, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := database.Migrate(ctx); err != nil {
+	ids, iErr := idpkg.NewSnowflake(1)
+	if iErr != nil {
+		_ = database.Close()
+		return nil, iErr
+	}
+	if err := database.Migrate(ctx, ids); err != nil { // 回填需要应用侧雪花 ID（docs i18n §8.2：译文迁移不用 seed 段）
 		_ = database.Close()
 		return nil, err
 	}
@@ -142,12 +147,6 @@ func assemble(ctx context.Context) (*assembled, error) {
 	}
 	hasher := crypto.NewPasswordHasher()
 	tokens := token.New(conf.Config.EncryptSecret.JwtSecret)
-	ids, iErr := idpkg.NewSnowflake(1)
-	if iErr != nil {
-		_ = redisClient.Close()
-		_ = database.Close()
-		return nil, iErr
-	}
 
 	users := dao.NewSysUserRepository(database)
 	logsRepo := dao.NewLoginLogRepository(database)

@@ -12,6 +12,7 @@ import (
 	conf "dugu-hr-saas-admin/config"
 	"dugu-hr-saas-admin/domain/authn"
 	"dugu-hr-saas-admin/domain/sysuser"
+	"dugu-hr-saas-admin/infrastructure/db/po"
 )
 
 // columnSpecs 新列增量（缺失 → ADD COLUMN；幂等）。
@@ -63,7 +64,9 @@ var renameSpecs = []struct {
 //  2. dropIndexSpecs：退役索引清理（如 v0.3 前的旧 uk_action 全局唯一）；
 //  3. ensureIndexes：唯一/普通索引增量（information_schema 检查后 CREATE/
 //     CREATE UNIQUE INDEX）。
-func (d *DB) Migrate(ctx context.Context) error {
+//
+// 收尾：backfillAndDropMenuI18n——v0.6 把旧译文表数据并入统一翻译表后 DROP。
+func (d *DB) Migrate(ctx context.Context, ids authn.IDGenerator) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	for _, f := range conf.SQLFiles {
@@ -87,7 +90,102 @@ func (d *DB) Migrate(ctx context.Context) error {
 	if err := d.dropIndexes(ctx); err != nil {
 		return err
 	}
-	return d.ensureIndexes(ctx)
+	if err := d.ensureIndexes(ctx); err != nil {
+		return err
+	}
+	return d.backfillAndDropMenuI18n(ctx, ids) // v0.6：旧译文表数据并入统一翻译表后退役（幂等）
+}
+
+// ---------- v0.6 译文存量迁移（docs 基础设施-数据文案多语言(i18n)设计.md §8） ----------
+
+// backfillAndDropMenuI18n —— sys_menu_i18n → sys_i18n_text（res_type='menu'、field='name'）。
+// 幂等三步，全库一次性执行：
+//  1. 旧表不存在（全新库）→ 直接返回，什么都不做；
+//  2. 有旧表 → 逐行回填（INSERT，已存在 (res_id,lang,deleted_at) 的行跳过；
+//     deleted_at 原样透传——软删行的历史语义一并保留；雪花 ID 应用侧生成，不用 seed 9e15 段）；
+//  3. 行数核对一致 → DROP 旧表；不一致 fail-fast（旧表保留，下次启动自然重试）。
+//
+// 前置条件：SQLFiles 已先行建好统一表（sys_i18n_text.sql 在 Migrate 首段执行）。
+func (d *DB) backfillAndDropMenuI18n(ctx context.Context, ids authn.IDGenerator) error {
+	var tblCnt int64
+	if err := d.WithContext(ctx).Raw(
+		`SELECT COUNT(*) FROM information_schema.tables
+		  WHERE table_schema = DATABASE() AND table_name = 'sys_menu_i18n'`).Scan(&tblCnt).Error; err != nil {
+		return fmt.Errorf("检查 sys_menu_i18n 存在性: %w", err)
+	}
+	if tblCnt == 0 {
+		return nil // 全新库或已迁移完（旧表已退役）
+	}
+
+	type legacyRow struct {
+		MenuID    int64  `gorm:"column:menu_id"`
+		Lang      string `gorm:"column:lang"`
+		Name      string `gorm:"column:name"`
+		DeletedAt int64  `gorm:"column:deleted_at"`
+	}
+	var rows []legacyRow
+	if err := d.WithContext(ctx).
+		Table("sys_menu_i18n").
+		Select("menu_id, lang, name, deleted_at").
+		Find(&rows).Error; err != nil {
+		return fmt.Errorf("读旧译文表: %w", err)
+	}
+
+	type key struct {
+		resID int64
+		lang  string
+		del   int64
+	}
+	var existing []struct {
+		ResID     int64  `gorm:"column:res_id"`
+		Lang      string `gorm:"column:lang"`
+		DeletedAt int64  `gorm:"column:deleted_at"`
+	}
+	if err := d.WithContext(ctx).Model(&po.SysI18nText{}).
+		Select("res_id, lang, deleted_at").
+		Where("res_type = ? AND field = ?", "menu", "name").
+		Find(&existing).Error; err != nil {
+		return fmt.Errorf("读统一译文表存量: %w", err)
+	}
+	seen := make(map[key]bool, len(existing))
+	for _, e := range existing {
+		seen[key{e.ResID, e.Lang, e.DeletedAt}] = true
+	}
+
+	var migrated int
+	for _, r := range rows {
+		if seen[key{r.MenuID, r.Lang, r.DeletedAt}] {
+			continue
+		}
+		row := po.SysI18nText{
+			ID: ids.New(), ResType: "menu", ResID: r.MenuID,
+			Field: "name", Lang: r.Lang, Content: r.Name, DeletedAt: r.DeletedAt,
+		}
+		if err := d.WithContext(ctx).Create(&row).Error; err != nil {
+			return fmt.Errorf("回填译文 menu/%d/%s: %w", r.MenuID, r.Lang, err)
+		}
+		migrated++
+	}
+
+	var oldCnt, newCnt int64
+	if err := d.WithContext(ctx).
+		Table("sys_menu_i18n").Count(&oldCnt).Error; err != nil {
+		return fmt.Errorf("统计旧译文表: %w", err)
+	}
+	if err := d.WithContext(ctx).Model(&po.SysI18nText{}).
+		Where("res_type = ? AND field = ?", "menu", "name").
+		Count(&newCnt).Error; err != nil {
+		return fmt.Errorf("统计统一译文表: %w", err)
+	}
+	if oldCnt != newCnt {
+		return fmt.Errorf("菜单译文迁移行数不一致: 旧表=%d 统一表=%d（旧表保留未 DROP，下次启动自动重试）", oldCnt, newCnt)
+	}
+	if err := d.WithContext(ctx).Exec("DROP TABLE IF EXISTS sys_menu_i18n").Error; err != nil {
+		return fmt.Errorf("退役旧译文表 sys_menu_i18n: %w", err)
+	}
+	slog.Info("菜单译文已迁移至统一翻译表 sys_i18n_text，旧表 sys_menu_i18n 已退役",
+		"migrated", migrated, "total", newCnt)
+	return nil
 }
 
 // columnDropSpecs 退役列清理（结构演进淘汰；存在即删，幂等）。

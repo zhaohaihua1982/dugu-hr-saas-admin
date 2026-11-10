@@ -34,6 +34,8 @@ var msgMap = map[int]string{
 	ErrorMenuLangUnsupported: "语言不被支持（仅支持已注册语言）",
 	ErrorMenuNameRequired:    "菜单名称（默认语言译文）不能为空",
 	ErrorMenuSameLevelTaken:  "名称或请求地址与其同级重复，或该类型下权限点(code)重复",
+	ErrorI18nTarget:          "翻译资源类型或字段未登记",
+	ErrorI18nContent:         "译文超长或含非法字符",
 }
 
 // GetMsg 获取业务码对应文案，未知码回退通用 ERROR 文案。

@@ -6,7 +6,7 @@
 CREATE TABLE IF NOT EXISTS `sys_menu` (
     `id`          BIGINT       NOT NULL COMMENT '雪花ID，应用侧生成',
     `parent_id`   BIGINT       NOT NULL DEFAULT 0 COMMENT '父菜单；0=根',
-    `name`        VARCHAR(64)  NOT NULL COMMENT '菜单名称（默认语言名；译文在 sys_menu_i18n）',
+    `name`        VARCHAR(64)  NOT NULL COMMENT '菜单名称（默认语言兜底列，NOT NULL；译文在统一表 sys_i18n_text）',
     `type`        TINYINT      NOT NULL DEFAULT 1 COMMENT '1目录 2菜单 3动作(action)',
     `path`        VARCHAR(128) NOT NULL DEFAULT '' COMMENT '前端路由路径；全节点必填（按钮=action_code 同值）',
     `component`   VARCHAR(128) NOT NULL DEFAULT '' COMMENT '前端组件路径',

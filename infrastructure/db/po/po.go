@@ -69,16 +69,19 @@ type SysMenu struct {
 // TableName 表名。
 func (SysMenu) TableName() string { return "sys_menu" }
 
-// SysMenuI18n sys_menu_i18n 表对象（只翻 name；lang 写入前经 i18n.ParseLang 归一化）。
-type SysMenuI18n struct {
+// SysI18nText 统一翻译表 sys_i18n_text（数据文案唯一存储，docs 基础设施-i18n设计 §2；
+// 取代 sys_menu_i18n——菜单 name 现存于此：res_type='menu'、res_id=menu_id、field='name'）。
+type SysI18nText struct {
 	ID        int64     `gorm:"primaryKey;column:id"`
-	MenuID    int64     `gorm:"column:menu_id"`
+	ResType   string    `gorm:"column:res_type"`
+	ResID     int64     `gorm:"column:res_id"`
+	Field     string    `gorm:"column:field"`
 	Lang      string    `gorm:"column:lang"`
-	Name      string    `gorm:"column:name"`
+	Content   string    `gorm:"column:content"`
 	DeletedAt int64     `gorm:"column:deleted_at"`
 	CreatedAt time.Time `gorm:"column:created_at"`
 	UpdatedAt time.Time `gorm:"column:updated_at"`
 }
 
 // TableName 表名。
-func (SysMenuI18n) TableName() string { return "sys_menu_i18n" }
+func (SysI18nText) TableName() string { return "sys_i18n_text" }
