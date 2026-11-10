@@ -172,6 +172,15 @@ func assemble(ctx context.Context) (*assembled, error) {
 		Menus: appmenus.NewService(dao.NewMenuRepository(database, ids), ids),
 	}
 
+	// 存量繁体译文补齐（docs《菜单繁体中文存量数据补齐建议.md》）：幂等，不覆盖人工译文。
+	filled, skipped, missing, bErr := svc.Menus.BackfillTraditionalNames(ctx)
+	if bErr != nil {
+		_ = redisClient.Close()
+		_ = database.Close()
+		return nil, fmt.Errorf("zh-TW 菜单译文补齐: %w", bErr)
+	}
+	slog.Info("zh-TW 菜单译文补齐完成", "filled", filled, "skipped", skipped, "missing", missing)
+
 	// ---------- interfaces ----------
 	router := routes.NewRouter(svc, tokens, sessions)
 
