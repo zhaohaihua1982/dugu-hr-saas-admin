@@ -25,21 +25,22 @@ var ErrBadMenuID = errors.New("menus: bad id param")
 // Name 为 ?lang= 解析后的展示名（回退链：译文 → 主表 name）；
 // Names 仅在详情/编辑回填时填充；Children 仅树形状填充（'[]' 非 null）。
 type NodeView struct {
-	ID         string            `json:"id"`
-	ParentID   string            `json:"parent_id"`
-	Name       string            `json:"name"`
-	Names      map[string]string `json:"names,omitempty"`
-	Type       int               `json:"type"` // 1目录 2菜单 3动作
-	Path       string            `json:"path"`
-	Component  string            `json:"component"`
-	Icon       string            `json:"icon"`
-	Sort       int               `json:"sort"`
-	Visible    bool              `json:"visible"`
-	Status     int               `json:"status"` // 1启用 0停用
-	ActionCode string            `json:"action_code"`
-	Remark     string            `json:"remark"`
-	CreatedAt  string            `json:"created_at"`
-	Children   []NodeView        `json:"children,omitempty"`
+	ID        string            `json:"id"`
+	ParentID  string            `json:"parent_id"`
+	Name      string            `json:"name"`
+	Names     map[string]string `json:"names,omitempty"`
+	Type      int               `json:"type"` // 1目录 2菜单 3动作
+	Path      string            `json:"path"`
+	Component string            `json:"component"`
+	Icon      string            `json:"icon"`
+	Sort      int               `json:"sort"`
+	IDPath    string            `json:"id_path"` // 父链ID串：根=自身；子="父id/.../自身"
+	Visible   bool              `json:"visible"`
+	Status    int               `json:"status"` // 1启用 0停用
+	Code      string            `json:"code"`
+	Remark    string            `json:"remark"`
+	CreatedAt string            `json:"created_at"`
+	Children  []NodeView        `json:"children,omitempty"`
 }
 
 // toView 聚合 → 视图（lang 为空表示不解析展示名 → 直接主表 name）。
@@ -48,8 +49,8 @@ func toView(m *dmenu.Menu, lang string) NodeView {
 		ID: strconv.FormatInt(m.ID, 10), ParentID: strconv.FormatInt(m.ParentID, 10),
 		Name: m.Name, Type: int(m.Type),
 		Path: m.Path, Component: m.Component, Icon: m.Icon,
-		Sort: m.Sort, Visible: m.Visible, Status: int(m.Status),
-		ActionCode: m.ActionCode, Remark: m.Remark,
+		Sort: m.Sort, Visible: m.Visible, Status: int(m.Status), IDPath: m.IDPath,
+		Code: m.Code, Remark: m.Remark,
 	}
 	if lang != "" {
 		v.Name = m.DisplayName(i18n.Lang(lang))
@@ -65,34 +66,34 @@ func toView(m *dmenu.Menu, lang string) NodeView {
 
 // UpsertMenuReq 创建/修改公共字段（修改时 UpdateMenuReq 用指针语义：传了才改）。
 type UpsertMenuReq struct {
-	ParentID   string            `json:"parent_id" binding:"omitempty"` // "0"或空=根
-	Name       string            `json:"name" binding:"required,max=64"`
-	Names      map[string]string `json:"names"` // lang → 名；写入前 ParseLang 归一化，未注册 → 30035
-	Type       int               `json:"type" binding:"required,oneof=1 2 3"`
-	Path       string            `json:"path" binding:"omitempty,max=128"`
-	Component  string            `json:"component" binding:"omitempty,max=128"`
-	Icon       string            `json:"icon" binding:"omitempty,max=64"`
-	Sort       int               `json:"sort" binding:"omitempty,min=0,max=9999"`
-	Visible    *bool             `json:"visible"` // 缺省 true
-	Status     *int              `json:"status" binding:"omitempty,oneof=0 1"`
-	ActionCode string            `json:"action_code" binding:"omitempty,max=64"`
-	Remark     string            `json:"remark" binding:"omitempty,max=255"`
+	ParentID  string            `json:"parent_id" binding:"omitempty"` // "0"或空=根
+	Name      string            `json:"name" binding:"required,max=64"`
+	Names     map[string]string `json:"names"` // lang → 名；写入前 ParseLang 归一化，未注册 → 30035
+	Type      int               `json:"type" binding:"required,oneof=1 2 3"`
+	Path      string            `json:"path" binding:"omitempty,max=128"`
+	Component string            `json:"component" binding:"omitempty,max=128"`
+	Icon      string            `json:"icon" binding:"omitempty,max=64"`
+	Sort      int               `json:"sort" binding:"omitempty,min=0,max=9999"`
+	Visible   *bool             `json:"visible"` // 缺省 true
+	Status    *int              `json:"status" binding:"omitempty,oneof=0 1"`
+	Code      string            `json:"code" binding:"omitempty,max=64"`
+	Remark    string            `json:"remark" binding:"omitempty,max=255"`
 }
 
 // UpdateMenuReq 修改（指针语义）。
 type UpdateMenuReq struct {
-	ParentID   *string           `json:"parent_id" binding:"omitempty"`
-	Name       *string           `json:"name" binding:"omitempty,min=1,max=64"`
-	Names      map[string]string `json:"names"` // 只覆盖所传语言（docs §4）
-	Type       *int              `json:"type" binding:"omitempty,oneof=1 2 3"`
-	Path       *string           `json:"path" binding:"omitempty,max=128"`
-	Component  *string           `json:"component" binding:"omitempty,max=128"`
-	Icon       *string           `json:"icon" binding:"omitempty,max=64"`
-	Sort       *int              `json:"sort" binding:"omitempty,min=0,max=9999"`
-	Visible    *bool             `json:"visible"`
-	Status     *int              `json:"status" binding:"omitempty,oneof=0 1"`
-	ActionCode *string           `json:"action_code" binding:"omitempty,max=64"`
-	Remark     *string           `json:"remark" binding:"omitempty,max=255"`
+	ParentID  *string           `json:"parent_id" binding:"omitempty"`
+	Name      *string           `json:"name" binding:"omitempty,min=1,max=64"`
+	Names     map[string]string `json:"names"` // 只覆盖所传语言（docs §4）
+	Type      *int              `json:"type" binding:"omitempty,oneof=1 2 3"`
+	Path      *string           `json:"path" binding:"omitempty,max=128"`
+	Component *string           `json:"component" binding:"omitempty,max=128"`
+	Icon      *string           `json:"icon" binding:"omitempty,max=64"`
+	Sort      *int              `json:"sort" binding:"omitempty,min=0,max=9999"`
+	Visible   *bool             `json:"visible"`
+	Status    *int              `json:"status" binding:"omitempty,oneof=0 1"`
+	Code      *string           `json:"code" binding:"omitempty,max=64"`
+	Remark    *string           `json:"remark" binding:"omitempty,max=255"`
 }
 
 // SortItem 保存排序条目（管理图“保存排序”：前端整树按行提交 {id, sort}）。
@@ -226,7 +227,7 @@ func (s *Service) Create(ctx context.Context, req *UpsertMenuReq, opUID int64, p
 		Type: dmenu.Type(req.Type),
 		Path: req.Path, Component: req.Component, Icon: req.Icon,
 		Sort: req.Sort, Visible: req.Visible == nil || *req.Visible,
-		ActionCode: strings.TrimSpace(req.ActionCode), Remark: req.Remark,
+		Code: strings.TrimSpace(req.Code), Remark: req.Remark,
 	}
 	if req.Status != nil {
 		m.Status = dmenu.Status(*req.Status)
@@ -243,12 +244,16 @@ func (s *Service) Create(ctx context.Context, req *UpsertMenuReq, opUID int64, p
 		return nil, err
 	}
 	m.ID = s.ids.New()
+	// v0.4：目录可空码 → 自动补 dir:<id>（(type,code) 全局唯一键纯索引成立，无空值特例）
+	if m.Type == dmenu.TypeDir && strings.TrimSpace(m.Code) == "" {
+		m.Code = "dir:" + strconv.FormatInt(m.ID, 10)
+	}
 	if err := s.menus.Create(ctx, m); err != nil {
 		return nil, err
 	}
 	s.audit("menu.create", opUID, p, map[string]interface{}{
 		"menu_id": m.ID, "name": m.Name, "type": int(m.Type),
-		"parent_id": m.ParentID, "action_code": m.ActionCode, "langs": keysOf(names),
+		"parent_id": m.ParentID, "code": m.Code, "langs": keysOf(names),
 	})
 	loaded, lErr := s.load(ctx, m.ID)
 	if lErr != nil {
@@ -321,8 +326,12 @@ func (s *Service) Update(ctx context.Context, id int64, req *UpdateMenuReq, opUI
 	if req.Status != nil {
 		m.Status = dmenu.Status(*req.Status)
 	}
-	if req.ActionCode != nil {
-		m.ActionCode = strings.TrimSpace(*req.ActionCode)
+	if req.Code != nil {
+		c := strings.TrimSpace(*req.Code)
+		if c == "" {
+			return nil, dmenu.ErrBadParams // code 不允许清空（目录亦然：dir:<id> 自动码不回填）
+		}
+		m.Code = c
 	}
 	if req.Remark != nil {
 		m.Remark = *req.Remark
@@ -349,7 +358,7 @@ func (s *Service) Update(ctx context.Context, id int64, req *UpdateMenuReq, opUI
 		return nil, err
 	}
 	s.audit("menu.update", opUID, p, map[string]interface{}{
-		"menu_id": id, "type": int(m.Type), "parent_id": m.ParentID, "action_code": m.ActionCode,
+		"menu_id": id, "type": int(m.Type), "parent_id": m.ParentID, "code": m.Code,
 	})
 	updated, uErr := s.load(ctx, id)
 	if uErr != nil {

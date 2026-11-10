@@ -30,7 +30,7 @@
   "30034": "Invalid menu parameters",
   "30035": "Language not supported (registered languages only)",
   "30036": "Menu name (default-language name) is required",
-  "30037": "Duplicate name, path or action code under the same parent",
+  "30037": "Duplicate name or path within the same level, or code already exists for this type",
 
   "404": "Endpoint not found or wrong HTTP method (POST/GET are strictly separated)",
 

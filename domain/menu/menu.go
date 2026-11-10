@@ -64,38 +64,39 @@ const (
 	maxName   = 64
 	maxPath   = 128
 	maxIcon   = 64
-	maxCode   = 64 // action_code VALUES(64) 与 DDL 同步
+	maxCode   = 64 // code 长度与 DDL 同步
 	maxRemark = 255
 )
 
 // ---------- 聚合根 ----------
 
 // Menu 菜单聚合根。不变式（v0.3 同级唯一方案定稿）：
-//   - 所有节点三必填：name（默认语言名兜底）、**path（请求地址）**、
-//     **action_code（权限点）**；
-//   - 同级唯一（同一 parent 下）：name / path / action_code 互不重复
-//     （DB 生成列 uk_menu_name/uk_menu_path/uk_menu_action，软删行不参与）；
-//   - 按钮无独立路由：path 约定填 action_code 同值（同级天然唯一）；
+//   - name/path 必填；**code（权限点）菜单与动作必填**，目录可空
+//     （应用层补 dir:<id>，保证 (type,code) 全局唯一纯索引成立，v0.4）；
+//   - 同级唯一：name / path（DB uk_menu_name/uk_menu_path，deleted_at 参与键、
+//     软删行不占坑）；**code 全局按类型唯一**：uk_menu_code(type,code,deleted_at)；
+//   - 按钮无独立路由：path 约定填 code 同值（同级天然唯一）；
 //   - names 的 key 必须是已注册语言；含默认语言时必须与 name 一致（应用层校验）；
 //   - 动作是叶子：任何节点都不能以动作节点为父；动作不能作根；
 //   - parent 链不可成环、dir/menu 链深度 ≤ MaxDepth（动作不计层）；
-//   - 翻译只涉及 name；path/component/icon/action_code 绝不翻译（docs §1.1）。
+//   - 翻译只涉及 name；path/component/icon/code 绝不翻译（docs §1.1）。
 type Menu struct {
-	ID         int64
-	ParentID   int64
-	Name       string            // 默认语言名（NOT NULL，兜底）
-	Names      map[string]string // lang → 译文；树/展示不用，编辑回填用
-	Type       Type
-	Path       string
-	Component  string
-	Icon       string
-	Sort       int
-	Visible    bool
-	Status     Status
-	ActionCode string
-	Remark     string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID        int64
+	ParentID  int64
+	Name      string            // 默认语言名（NOT NULL，兜底）
+	Names     map[string]string // lang → 译文；树/展示不用，编辑回填用
+	Type      Type
+	Path      string
+	Component string
+	Icon      string
+	Sort      int
+	IDPath    string // 父链 ID 串（根=自身；子="父id/.../自身"，docs §11.8）：子树过滤/展开折叠
+	Visible   bool
+	Status    Status
+	Code      string
+	Remark    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // DisplayName 单一解析入口（docs §7：禁止各处自己写 fallback）。
@@ -124,14 +125,15 @@ func (m *Menu) Validate() error {
 		len(m.Icon) > maxIcon || len(m.Remark) > maxRemark {
 		return ErrBadParams
 	}
-	// v0.3：path / action_code 全部节点必填（同级唯一在 DB 生成列硬保证）
+	// path 全节点必填（同级唯一在 DB uk_menu_name/uk_menu_path 硬保证）
 	if strings.TrimSpace(m.Path) == "" {
 		return ErrBadParams // 请求地址不能为空（30034）
 	}
-	if strings.TrimSpace(m.ActionCode) == "" {
-		return ErrBadParams // 权限点不能为空（30034）
+	// code（权限点）：菜单/动作必填；目录可空（v0.4，应用层自动 dir:<id>）
+	if m.Type != TypeDir && strings.TrimSpace(m.Code) == "" {
+		return ErrBadParams
 	}
-	if len(m.ActionCode) > maxCode {
+	if len(m.Code) > maxCode {
 		return ErrBadParams
 	}
 	// names：key 必须已注册（归一化在应用层做——ParseLang 后写入）；空/超长译文拒绝
@@ -151,16 +153,16 @@ func (m *Menu) Validate() error {
 
 // Repository sys_menu + sys_menu_i18n 的仓储端口。
 type Repository interface {
-	// Create 主表 + names 子表同事务新建；同级重复（v0.3: name/path/action_code）→ ErrSameLevelTaken。
+	// Create 主表 + names 子表同事务新建；同级重复（name/path）或 code 同类重复 → ErrSameLevelTaken。
 	Create(ctx context.Context, m *Menu) error
 	// ByID 主表 + names 全集；未命中 (nil, nil)。
 	ByID(ctx context.Context, id int64) (*Menu, error)
-	// Save 主表内容字段更新（name/path/component/icon/visible/status/action_code/remark）；
+	// Save 主表内容字段更新（name/path/component/icon/visible/status/code/remark）；
 	// 同级重复 → ErrSameLevelTaken。
 	Save(ctx context.Context, m *Menu) error
 	// UpdateSort 仅更新排序（管理台“保存排序”批量调用）。
 	UpdateSort(ctx context.Context, id int64, sort int) error
-	// Move 结构变更：换父（父结构/环/深度校验由应用层完成）。
+	// Move 结构变更：换父并重算本节点及子树 id_path（事务内完成，docs §11.8）。
 	Move(ctx context.Context, id, parentID int64) error
 	// UpsertNames 覆盖所传语言（未传语言不动，docs §4 “names 可只传部分语言”）。
 	UpsertNames(ctx context.Context, menuID int64, names map[string]string) error

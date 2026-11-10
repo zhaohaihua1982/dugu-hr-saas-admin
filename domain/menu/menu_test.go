@@ -9,12 +9,12 @@ import (
 
 func baseMenu() *Menu {
 	return &Menu{
-		Name:       "用户管理",
-		Type:       TypeMenu,
-		Path:       "/system/user",
-		ActionCode: "system:user:page",
-		Visible:    true,
-		Status:     StatusOn,
+		Name:    "用户管理",
+		Type:    TypeMenu,
+		Path:    "/system/user",
+		Code:    "system:user:page",
+		Visible: true,
+		Status:  StatusOn,
 	}
 }
 
@@ -42,7 +42,7 @@ func TestValidateRequiredForAll(t *testing.T) {
 		t.Fatalf("path 为空应报 ErrBadParams, got %v", err)
 	}
 	m2 := baseMenu()
-	m2.ActionCode = ""
+	m2.Code = ""
 	if err := m2.Validate(); err != ErrBadParams {
 		t.Fatalf("action_code 为空应报 ErrBadParams, got %v", err)
 	}
@@ -52,7 +52,7 @@ func TestValidateRequiredForAll(t *testing.T) {
 		m3.Type = tt
 		if tt == TypeAction {
 			m3.Path = "system:user:remove" // 按钮 path 约定=action_code 同值
-			m3.ActionCode = "system:user:remove"
+			m3.Code = "system:user:remove"
 		}
 		if err := m3.Validate(); err != nil {
 			t.Fatalf("type=%d 合法节点不应报错: %v", tt, err)
@@ -77,5 +77,24 @@ func TestDisplayNameFallback(t *testing.T) {
 	}
 	if got := m.DisplayName(i18n.LangZH); got != "用户管理" {
 		t.Fatalf("命中译文失败: %q", got)
+	}
+}
+
+func TestValidateDirCodeOptional(t *testing.T) {
+	// v0.4：目录 code 可空（应用层补 dir:<id>），menu/action 必填
+	m := baseMenu()
+	m.Type = TypeDir
+	m.Path = "/org"
+	m.Code = ""
+	if err := m.Validate(); err != nil {
+		t.Fatalf("目录空码应合法: %v", err)
+	}
+	// 动作保持必填
+	m2 := baseMenu()
+	m2.Type = TypeAction
+	m2.Path = "system:user:remove"
+	m2.Code = ""
+	if err := m2.Validate(); err != ErrBadParams {
+		t.Fatalf("动作空码应报 ErrBadParams, got %v", err)
 	}
 }

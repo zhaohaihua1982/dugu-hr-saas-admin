@@ -48,21 +48,22 @@ func (SysLoginLog) TableName() string { return "sys_login_log" }
 
 // SysMenu sys_menu 表对象（docs 三模块设计 §6；action_uniq 为生成列，不经本结构体写）。
 type SysMenu struct {
-	ID         int64     `gorm:"primaryKey;column:id"` // 雪花ID，应用侧生成
-	ParentID   int64     `gorm:"column:parent_id"`
-	Name       string    `gorm:"column:name"`
-	Type       int       `gorm:"column:type"`
-	Path       string    `gorm:"column:path"`
-	Component  string    `gorm:"column:component"`
-	Icon       string    `gorm:"column:icon"`
-	Sort       int       `gorm:"column:sort"`
-	Visible    bool      `gorm:"column:visible"`
-	Status     int       `gorm:"column:status"`
-	ActionCode string    `gorm:"column:action_code"`
-	Remark     string    `gorm:"column:remark"`
-	DeletedAt  int64     `gorm:"column:deleted_at"`
-	CreatedAt  time.Time `gorm:"column:created_at"`
-	UpdatedAt  time.Time `gorm:"column:updated_at"`
+	ID        int64     `gorm:"primaryKey;column:id"` // 雪花ID，应用侧生成
+	ParentID  int64     `gorm:"column:parent_id"`
+	Name      string    `gorm:"column:name"`
+	Type      int       `gorm:"column:type"`
+	Path      string    `gorm:"column:path"`
+	Component string    `gorm:"column:component"`
+	Icon      string    `gorm:"column:icon"`
+	Sort      int       `gorm:"column:sort"`
+	IDPath    string    `gorm:"column:id_path"` // 父链ID串：根=自身；子="父id/.../自身"
+	Visible   bool      `gorm:"column:visible"`
+	Status    int       `gorm:"column:status"`
+	Code      string    `gorm:"column:code"`
+	Remark    string    `gorm:"column:remark"`
+	DeletedAt int64     `gorm:"column:deleted_at"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at"`
 }
 
 // TableName 表名。

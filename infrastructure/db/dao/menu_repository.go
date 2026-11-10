@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -38,21 +39,33 @@ func toDomainMenu(p *po.SysMenu) *menu.Menu {
 		ID: p.ID, ParentID: p.ParentID, Name: p.Name,
 		Type: menu.Type(p.Type),
 		Path: p.Path, Component: p.Component, Icon: p.Icon,
-		Sort: p.Sort, Visible: p.Visible, Status: menu.Status(p.Status),
-		ActionCode: p.ActionCode, Remark: p.Remark,
+		Sort: p.Sort, IDPath: p.IDPath, Visible: p.Visible, Status: menu.Status(p.Status),
+		Code: p.Code, Remark: p.Remark,
 		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 	}
 }
 
 // Create 主表 + names 子表同事务新建；同级重复归类（30037，wrapMenuDup）。
+// id_path 在事务内按父节点现值计算（根=自身；子="父id_path/自身"）。
 func (r *MenuRepository) Create(ctx context.Context, m *menu.Menu) error {
 	return r.d.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var parentPath string
+		if m.ParentID != 0 {
+			var pp po.SysMenu
+			if err := tx.Select("id_path").
+				First(&pp, "id = ? AND deleted_at = 0", m.ParentID).Error; err != nil {
+				return fmt.Errorf("menu.create.parent_path: %w", err)
+			}
+			parentPath = pp.IDPath
+		}
+		m.IDPath = joinIDPath(parentPath, m.ID)
 		p := &po.SysMenu{
 			ID: m.ID, ParentID: m.ParentID, Name: m.Name,
 			Type: int(m.Type),
 			Path: m.Path, Component: m.Component, Icon: m.Icon,
 			Sort: m.Sort, Visible: m.Visible, Status: int(m.Status),
-			ActionCode: m.ActionCode, Remark: m.Remark,
+			IDPath: m.IDPath,
+			Code:   m.Code, Remark: m.Remark,
 		}
 		if err := tx.Create(p).Error; err != nil {
 			return wrapMenuDup(err, "menu.create")
@@ -92,7 +105,7 @@ func (r *MenuRepository) Save(ctx context.Context, m *menu.Menu) error {
 			"name": m.Name, "type": int(m.Type),
 			"path": m.Path, "component": m.Component, "icon": m.Icon,
 			"sort": m.Sort, "visible": m.Visible, "status": int(m.Status),
-			"action_code": m.ActionCode, "remark": m.Remark,
+			"code": m.Code, "remark": m.Remark,
 		}).Error
 	if err != nil {
 		return wrapMenuDup(err, "menu.save")
@@ -107,11 +120,51 @@ func (r *MenuRepository) UpdateSort(ctx context.Context, mid int64, sortV int) e
 		Update("sort", sortV).Error
 }
 
-// Move 结构变更：换父。
+// Move 结构变更：换父并重算本节点及其子树的 id_path（同事务）。
+// 重算规则：本节点 id_path = 新父 id_path/自身；子树 = 新前缀 + 旧路径自前缀之后的部分。
 func (r *MenuRepository) Move(ctx context.Context, mid, parentID int64) error {
-	return r.d.WithContext(ctx).Model(&po.SysMenu{}).
-		Where("id = ? AND deleted_at = 0", mid).
-		Update("parent_id", parentID).Error
+	return r.d.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var self po.SysMenu
+		if err := tx.First(&self, "id = ? AND deleted_at = 0", mid).Error; err != nil {
+			return fmt.Errorf("menu.move.self: %w", err)
+		}
+		var parentPath string
+		if parentID != 0 {
+			var pp po.SysMenu
+			if err := tx.Select("id_path").
+				First(&pp, "id = ? AND deleted_at = 0", parentID).Error; err != nil {
+				return fmt.Errorf("menu.move.parent_path: %w", err)
+			}
+			parentPath = pp.IDPath
+		}
+		newPath := joinIDPath(parentPath, mid)
+		oldPath := self.IDPath
+		if newPath == oldPath && parentID == self.ParentID {
+			return nil
+		}
+		if err := tx.Model(&po.SysMenu{}).
+			Where("id = ?", mid).
+			Updates(map[string]interface{}{"parent_id": parentID, "id_path": newPath}).Error; err != nil {
+			return fmt.Errorf("menu.move.self_path: %w", err)
+		}
+		// 子树整体平移：SUBSTRING 起点 = len(oldPath)+2（1-based，越过“旧前缀+分隔斜杠”）。
+		err := tx.Exec(
+			"UPDATE sys_menu SET id_path = CONCAT(?, '/', SUBSTRING(id_path, ?)) "+
+				"WHERE deleted_at = 0 AND id <> ? AND id_path LIKE CONCAT(?, '/%')",
+			newPath, len(oldPath)+2, mid, oldPath).Error
+		if err != nil {
+			return fmt.Errorf("menu.move.subtree: %w", err)
+		}
+		return nil
+	})
+}
+
+// joinIDPath 拼接父子链（根节点：父路径为空 → 只剩自身 id）。
+func joinIDPath(parentPath string, id int64) string {
+	if parentPath == "" {
+		return strconv.FormatInt(id, 10)
+	}
+	return parentPath + "/" + strconv.FormatInt(id, 10)
 }
 
 // UpsertNames 覆盖所传语言（未传不动）：uk_menu_i18n 冲突 → 活行改名。
@@ -215,7 +268,7 @@ func wrapMenuDup(err error, op string) error {
 		return fmt.Errorf("%s: %w", op, err)
 	}
 	switch idx {
-	case "uk_menu_name", "uk_menu_path", "uk_menu_action":
+	case "uk_menu_name", "uk_menu_path", "uk_menu_code":
 		return menu.ErrSameLevelTaken
 	}
 	return fmt.Errorf("%s: %w", op, err)
