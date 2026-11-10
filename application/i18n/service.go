@@ -124,14 +124,102 @@ func (s *Service) Meta(ctx context.Context, resType string) (*MetaView, error) {
 		Langs: langs, DefaultLang: string(i18n.Default())}, nil
 }
 
-// Texts 查：某资源全部字段的全部译文。
+// TextsList GET /i18n/texts（不传 resId）—— 资源类型维度的译文列表（译文总览页）。
+// 游标翻页无 total；缺译 = 空串非缺键；texts 不含默认语言键（§7.4）。
+type TextsList struct {
+	ResType     string      `json:"resType"`
+	Label       string      `json:"label"`
+	DefaultLang string      `json:"defaultLang"`
+	Langs       []string    `json:"langs"` // 非默认语言的已注册语言全量
+	Items       []TextsItem `json:"items"` // 按 resId 升序；field 多于 1 个时同资源出多行（每字段一行）
+}
+
+// TextsItem 列表单行：某资源某字段的全部语言译文 + 默认语言原文。
+type TextsItem struct {
+	ResID  string            `json:"resId"` // 雪花ID字符串（语言中立响应约定）
+	Key    string            `json:"key"`   // 资源可读标识（菜单 name / 字典项 value）
+	Field  string            `json:"field"`
+	Source string            `json:"source"` // 默认语言原文（待翻内容列）
+	Texts  map[string]string `json:"texts"`  // lang → 译文（缺译 = 空串）
+}
+
+// Texts 查（resId 二选一，§7.5 v1.4 起 resId 非必填）：
+//   - resId 有值 → 单资源全部译文（详情/表单回填，原语义）；
+//   - resId 为空 → 资源类型维度列表（field 可选过滤；afterId/limit 游标，≤100 默认 50）。
 //
-// 五步均为 O(1) SQL：Exists 1 条 + Snapshot（每白名单字段 1 条）+ GetMany 1 条。
-func (s *Service) Texts(ctx context.Context, resType, resIDStr string) (*TextsView, error) {
+// 列表模式 SQL 恒 ≤3 条：ListIDs + Snapshot(每字段) + GetMany(一次批量) 无 N+1。
+func (s *Service) Texts(ctx context.Context, resType, field, resIDStr string, afterID int64, limit int) (interface{}, error) {
 	r, spec, err := specOf(resType)
 	if err != nil {
 		return nil, err
 	}
+	if resIDStr == "" {
+		return s.listTexts(ctx, r, spec, field, afterID, limit)
+	}
+	return s.textsOf(ctx, r, spec, resIDStr)
+}
+
+// listTexts 资源类型维度列表。
+func (s *Service) listTexts(ctx context.Context, r di18n.Resource, spec di18n.Spec, field string, afterID int64, limit int) (*TextsList, error) {
+	if field != "" && !di18n.HasField(r, field) {
+		return nil, di18n.ErrTargetUnregistered // 30038：field 必须在白名单内
+	}
+	fields := di18n.Fields(r)
+	if field != "" {
+		fields = []string{field}
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	ids, err := spec.Resolver.ListIDs(ctx, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	many, err := s.t.GetMany(ctx, r, ids, fields, nil)
+	if err != nil {
+		return nil, err
+	}
+	def := i18n.Default()
+	langs := i18n.Languages()
+	outLangs := make([]string, 0, len(langs))
+	for _, l := range langs {
+		if l == def {
+			continue
+		}
+		outLangs = append(outLangs, string(l))
+	}
+	// 每字段一枚 Snapshot（白名单只有 1~2 个字段；与 pending 同一条纪律：快照按字段批量）
+	keys := make(map[string]map[int64]di18n.ResItem, len(fields)) // field → id → ResItem
+	for _, f := range fields {
+		snap, err := spec.Resolver.Snapshot(ctx, ids, f)
+		if err != nil {
+			return nil, err
+		}
+		keys[f] = snap
+	}
+	items := make([]TextsItem, 0, len(ids)*len(fields))
+	for _, id := range ids { // 保持 ListIDs 的游标顺序
+		for _, f := range fields {
+			resItem := keys[f][id]
+			if resItem.ID == 0 {
+				continue // ids 刚来自 ListIDs，理论不缺（防御）
+			}
+			byLang := make(map[string]string, len(outLangs))
+			for _, l := range outLangs {
+				byLang[l] = many[id][f][di18n.Lang(l)]
+			}
+			items = append(items, TextsItem{
+				ResID: strconv.FormatInt(id, 10), Key: resItem.Key, Field: f,
+				Source: resItem.Value, Texts: byLang,
+			})
+		}
+	}
+	return &TextsList{ResType: string(r), Label: spec.Label, DefaultLang: string(def),
+		Langs: outLangs, Items: items}, nil
+}
+
+// textsOf 单资源详情（原语义）。SQL ≤3 条：Exists + Snapshot（每字段 1 条）+ GetMany。
+func (s *Service) textsOf(ctx context.Context, r di18n.Resource, spec di18n.Spec, resIDStr string) (*TextsView, error) {
 	id, err := parseResID(resIDStr)
 	if err != nil {
 		return nil, err
@@ -177,7 +265,8 @@ func (s *Service) Texts(ctx context.Context, resType, resIDStr string) (*TextsVi
 
 // PutTexts 增/改（幂等 PUT）：Exists → 白名单/语言/默认语言 → Repo.Save。
 // 存在性校验发生在写入前——库里不新增任何行（验收 9）。
-func (s *Service) PutTexts(ctx context.Context, req *PutTextsReq, opUID int64, p types.RequestParams) (*TextsView, error) {
+// 返回保存后的全量详情视图（含未动语言；形状随 s.Texts，可能是 *TextsView）。
+func (s *Service) PutTexts(ctx context.Context, req *PutTextsReq, opUID int64, p types.RequestParams) (interface{}, error) {
 	r, spec, err := specOf(req.ResType)
 	if err != nil {
 		return nil, err
@@ -223,7 +312,7 @@ func (s *Service) PutTexts(ctx context.Context, req *PutTextsReq, opUID int64, p
 	}
 	audit("i18n.text.save", opUID, p, map[string]interface{}{
 		"res_type": req.ResType, "res_id": req.ResID, "keys": touched})
-	return s.Texts(ctx, req.ResType, req.ResID)
+	return s.Texts(ctx, req.ResType, "", req.ResID, 0, 0) // 保存后回传全量视图（详情模式）
 }
 
 // DeleteText 删：单条（三档第 1 档，§7.7）——幂等，删不存在 = 成功无行推进。
