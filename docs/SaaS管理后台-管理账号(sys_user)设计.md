@@ -432,6 +432,13 @@ POST /api/v1/admin/sys-users/batch-unfreeze   { "ids": ["...","..."] }
 | 日志 | `logs/run-YYYY-MM-DD.log` 按天切分 |
 | `bash scripts/clear-ratelimit.sh [ip|--all]` | 开发期一键清限流计数器（不动验证码/短信码本体；**生产禁用**） |
 
+### 15.4 时区纪律（v1.3 · 2026-11-10 修复）
+
+- **事故**：`mysqldriver.NewConfig()` 默认 `Loc=UTC`——`parseTime=true` 却未设本地时区，写入前把北京时间转 UTC 落库（现在 19:40 写成 11:40，凭空差 8 小时）；DATETIME 列无时区语义，读出即错，属数据损坏而非展示偏差。MySQL 服务端时区（SYSTEM/CST）无辜。
+- **修复**：`infrastructure/db/database.go` 显式 `dsn.Loc = time.Local`（应用与 MySQL 同为本机 Asia/Shanghai），读写双向对齐；新登录日志实测与主机时间一致。
+- **存量校正**：一次性 `DATE_ADD(col, INTERVAL 8 HOUR)` 修正 DATETIME 全集（`sys_login_log.created_at`；`sys_user.locked_until/last_login_at/pwd_updated_at/created_at/updated_at`；`sys_menu/sys_menu_i18n` 的时间列）；WHERE 统一 `col < NOW()-4h`——已校正行不命中，脚本天然防重跑；`deleted_at` 是毫秒 epoch 不受影响。
+- **纪律**：今后任何 DSN 变更，`parseTime` 与 `loc` 必须成对审视；禁止依赖 MySQL 服务端时区兜底。
+
 ### 15.4 启动纪律与演进
 
 - 二进制**必须以项目根为工作目录**启动（`config/locales` 相对路径）——start.sh 已强制；
