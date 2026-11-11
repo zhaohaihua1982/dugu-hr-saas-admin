@@ -37,6 +37,7 @@
   "30044": "El valor (value) del elemento ya existe en este tipo",
   "30045": "El tipo de diccionario tiene elementos, no se puede eliminar",
   "30046": "Parámetros de diccionario no válidos",
+  "30047": "El tipo de diccionario está deshabilitado; sus elementos no se sirven",
   "404": "Interfaz inexistente o método de solicitud incorrecto（POST/GET se distinguen estrictamente）",
   "40001": "Error de base de datos, inténtelo de nuevo",
   "i18n.defaultLang": "El idioma predeterminado debe modificarse en la página de edición del recurso（menú/diccionario）; la interfaz de traducción no lo acepta",

@@ -114,6 +114,8 @@ func CodeOf(err error) int {
 		return code.ErrorDictTypeHasItems
 	case errors.Is(err, ddict.ErrBadParams):
 		return code.ErrorDictBadParams
+	case errors.Is(err, ddict.ErrTypeDisabled):
+		return code.ErrorDictTypeDisabled
 	}
 	return code.ErrorDatabase
 }

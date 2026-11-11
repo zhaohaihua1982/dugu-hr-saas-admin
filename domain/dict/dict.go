@@ -37,6 +37,9 @@ var (
 	ErrTypeHasItems = errors.New("dict: type has items")
 	// ErrBadParams 字典参数不合法（code/value/label 格式、长度、空值等）→ 30046。
 	ErrBadParams = errors.New("dict: bad params")
+	// ErrTypeDisabled 类型已停用，其下字典项不下发（连带语义，用户裁定 v1.4）→ 30047。
+	// 管理回显走 withDisabled=1 通道（该参数同时放行类型停用检查与停用项下发）。
+	ErrTypeDisabled = errors.New("dict: type disabled")
 	// ErrLangUnsupported labels 的 key 不是已注册语言 → 30035（与菜单共用，docs §4）。
 	ErrLangUnsupported = errors.New("dict: lang unsupported")
 )

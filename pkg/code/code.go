@@ -45,13 +45,14 @@ const (
 	ErrorI18nContent = 30039 // 译文超长或含非法字符（控制字符、\x00）
 	ErrorI18nResNot  = 30040 // 译文目标资源不存在（resType 合法但 resId 查无此行/已逻辑删除，v1.2）
 
-	// ---------- 字典（30041~30046，docs 系统管理-字典(sys_dict)设计.md §4；30047~30049 预留） ----------
+	// ---------- 字典（30041~30047，docs 系统管理-字典(sys_dict)设计.md §4；30048~30049 预留） ----------
 	ErrorDictTypeNotFound  = 30041 // 字典类型不存在
 	ErrorDictItemNotFound  = 30042 // 字典项不存在
 	ErrorDictTypeCodeTaken = 30043 // 字典类型编码（code）已存在
 	ErrorDictValueTaken    = 30044 // 字典项取值（value）在该类型下已存在
 	ErrorDictTypeHasItems  = 30045 // 字典类型下存在字典项，禁止删除
 	ErrorDictBadParams     = 30046 // 字典参数不合法（code/value 格式、长度、typeCode 不存在等）
+	ErrorDictTypeDisabled  = 30047 // 字典类型已停用，其下字典项不下发（withDisabled=1 管理通道放行）
 
 	// ---------- 路由兜底 ----------
 	ErrorNotFoundNoRoute = 404 // 接口不存在或请求方式不对（GET 访问了 POST 接口等）

@@ -43,6 +43,7 @@ var msgMap = map[int]string{
 	ErrorDictValueTaken:      "字典项取值（value）在该类型下已存在",
 	ErrorDictTypeHasItems:    "字典类型下存在字典项，禁止删除",
 	ErrorDictBadParams:       "字典参数不合法",
+	ErrorDictTypeDisabled:    "字典类型已停用，其下字典项不下发",
 }
 
 // GetMsg 获取业务码对应文案，未知码回退通用 ERROR 文案。

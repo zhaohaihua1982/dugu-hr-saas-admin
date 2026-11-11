@@ -161,6 +161,8 @@ func codeOf(err error) int {
 		return code.ErrorMenuLangUnsupported
 	case errors.Is(err, ddict.ErrBadParams), errors.Is(err, di18n.ErrContentInvalid):
 		return code.ErrorDictBadParams
+	case errors.Is(err, ddict.ErrTypeDisabled):
+		return code.ErrorDictTypeDisabled
 	}
 	return code.ErrorDatabase
 }
@@ -291,6 +293,11 @@ func (s *Service) ListItems(ctx context.Context, typeCode, langQuery string, wit
 	if err != nil {
 		return nil, err
 	}
+	// 类型停用 → 连带项不下发（用户裁定 v1.4，docs §2）；withDisabled=1 是管理回显
+	// 通道（编辑页取全量），同时放行类型停用检查与停用项下发。
+	if !withDisabled && t.Status != ddict.StatusOn {
+		return nil, ddict.ErrTypeDisabled
+	}
 	lang := i18n.Default()
 	if l, ok := i18n.ParseLang(langQuery); ok {
 		lang = l // 读宽容写严格：未识别 lang 回退默认语言，不报错
@@ -302,6 +309,30 @@ func (s *Service) ListItems(ctx context.Context, typeCode, langQuery string, wit
 	out := make([]OptionView, 0, len(items))
 	for i := range items {
 		out = append(out, OptionView{Value: items[i].Value, Label: items[i].DisplayLabel(lang)})
+	}
+	return out, nil
+}
+
+// ListItemsManage 返回后台管理所需的完整字典项字段。下拉接口仍只返回 OptionView，
+// 管理端通过 manage=1 使用此方法，避免把内部 id 暴露给普通业务下拉调用方。
+func (s *Service) ListItemsManage(ctx context.Context, typeCode, langQuery string, withDisabled bool) ([]ItemView, error) {
+	t, err := s.loadTypeByCode(ctx, typeCode)
+	if err != nil {
+		return nil, err
+	}
+	lang := i18n.Default()
+	if l, ok := i18n.ParseLang(langQuery); ok {
+		lang = l
+	}
+	items, err := s.items.ListByType(ctx, t.ID, withDisabled, lang)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ItemView, 0, len(items))
+	for i := range items {
+		item := toItemView(&items[i])
+		item.Label = items[i].DisplayLabel(lang)
+		out = append(out, item)
 	}
 	return out, nil
 }
@@ -420,6 +451,50 @@ func (s *Service) DeleteItem(ctx context.Context, id int64, opUID int64, p types
 	}
 	s.audit("dict.item.delete", opUID, p, map[string]interface{}{
 		"dict_item_id": id, "value": i.Value, "label": i.Label,
+	})
+	return nil
+}
+
+// StatusReq 独立启停端点请求体（v1.4 用户裁定：POST :id/status，body {status:0|1}）。
+type StatusReq struct {
+	Status *int `json:"status" binding:"required,oneof=0 1"`
+}
+
+// SetTypeStatus 启停类型（独立端点）。停用即时生效：其下字典项连带不下发（30047）。
+func (s *Service) SetTypeStatus(ctx context.Context, id int64, req *StatusReq, opUID int64, p types.RequestParams) error {
+	t, err := s.loadType(ctx, id)
+	if err != nil {
+		return err
+	}
+	t.Status = ddict.Status(*req.Status)
+	if err := t.Validate(); err != nil {
+		return err
+	}
+	if err := s.types.Save(ctx, t); err != nil {
+		return err
+	}
+	s.audit("dict.type.status", opUID, p, map[string]interface{}{
+		"dict_type_id": id, "code": t.Code, "status": int(t.Status),
+	})
+	return nil
+}
+
+// SetItemStatus 启停字典项（独立端点）。停用即"不再提供新选择"，历史数据仍引用
+// （docs §2 停用 ≠ 删除）。
+func (s *Service) SetItemStatus(ctx context.Context, id int64, req *StatusReq, opUID int64, p types.RequestParams) error {
+	i, err := s.loadItem(ctx, id)
+	if err != nil {
+		return err
+	}
+	i.Status = ddict.Status(*req.Status)
+	if err := i.Validate(); err != nil {
+		return err
+	}
+	if err := s.items.Save(ctx, i); err != nil {
+		return err
+	}
+	s.audit("dict.item.status", opUID, p, map[string]interface{}{
+		"dict_item_id": id, "value": i.Value, "status": int(i.Status),
 	})
 	return nil
 }

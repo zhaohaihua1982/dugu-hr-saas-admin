@@ -126,11 +126,13 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		admin.GET("dict-types", dictAPI.ListTypes)
 		admin.POST("dict-types", dictAPI.CreateType)
 		admin.PUT("dict-types/:id", dictAPI.UpdateType)
+		admin.POST("dict-types/:id/status", dictAPI.SetTypeStatus)
 		admin.DELETE("dict-types/:id", dictAPI.DeleteType)
 		admin.GET("dict-items", dictAPI.ListItems)
 		admin.GET("dict-items/:id", dictAPI.ItemDetail)
 		admin.POST("dict-items", dictAPI.CreateItem)
 		admin.PUT("dict-items/:id", dictAPI.UpdateItem)
+		admin.POST("dict-items/:id/status", dictAPI.SetItemStatus)
 		admin.DELETE("dict-items/:id", dictAPI.DeleteItem)
 	}
 	return r

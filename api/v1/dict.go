@@ -97,6 +97,44 @@ func (p *DictAPI) DeleteType(ctx *gin.Context) {
 	ctl.RespSuccess(ctx, nil)
 }
 
+// SetTypeStatus POST /admin/dict-types/:id/status —— 独立启停（v1.4）。
+func (p *DictAPI) SetTypeStatus(ctx *gin.Context) {
+	id, err := parseDictID(ctx)
+	if err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	var req appdict.StatusReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	if err := p.dict.SetTypeStatus(ctx.Request.Context(), id, &req, ctx.GetInt64(keyUID), requestParams(ctx)); err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	ctl.RespSuccess(ctx, nil)
+}
+
+// SetItemStatus POST /admin/dict-items/:id/status —— 独立启停（v1.4）。
+func (p *DictAPI) SetItemStatus(ctx *gin.Context) {
+	id, err := parseDictID(ctx)
+	if err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	var req appdict.StatusReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	if err := p.dict.SetItemStatus(ctx.Request.Context(), id, &req, ctx.GetInt64(keyUID), requestParams(ctx)); err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	ctl.RespSuccess(ctx, nil)
+}
+
 // ListItems GET /admin/dict-items?type=import_type&lang=&withDisabled=0
 // 响应 data 为 [{value,label}] 数组（前端下拉直接吃，docs §3）。
 func (p *DictAPI) ListItems(ctx *gin.Context) {
@@ -104,8 +142,15 @@ func (p *DictAPI) ListItems(ctx *gin.Context) {
 		ctl.RespError(ctx, appdict.ErrBadDictID, code.ErrorDictBadParams, nil)
 		return
 	}
-	items, err := p.dict.ListItems(ctx.Request.Context(), ctx.Query("type"),
-		ctx.Query("lang"), ctx.Query("withDisabled") == "1")
+	var items interface{}
+	var err error
+	if ctx.Query("manage") == "1" {
+		items, err = p.dict.ListItemsManage(ctx.Request.Context(), ctx.Query("type"),
+			ctx.Query("lang"), ctx.Query("withDisabled") == "1")
+	} else {
+		items, err = p.dict.ListItems(ctx.Request.Context(), ctx.Query("type"),
+			ctx.Query("lang"), ctx.Query("withDisabled") == "1")
+	}
 	if err != nil {
 		ErrorResponse(ctx, err)
 		return

@@ -37,6 +37,7 @@
   "30044": "Dict item value already exists in this type",
   "30045": "Dict type has items and cannot be deleted",
   "30046": "Invalid dict parameters",
+  "30047": "Dict type is disabled; its items are not served",
   "404": "Endpoint not found or wrong HTTP method (POST/GET are strictly separated)",
   "40001": "Database error, please retry",
   "i18n.defaultLang": "Default language must be edited on the resource edit page; the translation API does not accept it",
