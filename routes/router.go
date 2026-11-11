@@ -31,9 +31,9 @@ var PublicPaths = []string{
 	"/api/v1/admin/auth/sms/send",
 	"/api/v1/admin/auth/login/password",
 	"/api/v1/admin/auth/login/sms",
-	// 登录配置读取端匿名开放（docs 登录配置设计 §2.1）：登录页未登录时就要按
-	// login_mask 动态渲染可用的登录 tab。只读投影；写接口（PUT/reset）仍要求登录态。
-	"/api/v1/admin/login-configs-admin",
+	// 登录方式选项（docs 登录配置设计 §2.1）：登录页未登录时按 login_mask 动态
+	// 渲染可用的登录 tab。只回 login_mask 一个字段；写接口与配置读取仍要求登录态。
+	"/api/v1/admin/login-options",
 }
 
 // NewRouter 装配路由：全局 AuthGuard（未登录统一过滤，白名单放行）。
@@ -146,7 +146,8 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		// system:login-config:write 待权限模块落地后挂载——当前与字典同策略）。
 		// v1.2 用户裁定：读取端按端固定投影——-admin 写死管理后台配置（按前端所需
 		// 字段投影），-tenant 预留留空；写入端仍按 :type（PUT 全量 / POST reset）。
-		admin.GET("login-configs-admin", loginCfgAPI.GetAdmin)
+		admin.GET("login-options", loginCfgAPI.LoginOptions)   // 登录页匿名读取（白名单）
+		admin.GET("login-configs-admin", loginCfgAPI.GetAdmin) // 需登录态（v1.5）
 		admin.PUT("login-configs/:type", loginCfgAPI.Update)
 		admin.POST("login-configs/:type/reset", loginCfgAPI.Reset)
 	}

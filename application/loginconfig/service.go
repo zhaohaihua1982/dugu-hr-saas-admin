@@ -137,6 +137,22 @@ func (s *Service) AdminSettings(ctx context.Context) (*SettingView, error) {
 	return project(cfg), nil
 }
 
+// LoginOptions 管理后台登录方式选项（登录页专用最小投影，匿名可读）。
+// 走 Provider 快照（三级缓存，与管线同源同值）；行缺失按 §3.2 兜底默认值。
+type LoginOptionsView struct {
+	LoginMask int64 `json:"login_mask"`
+}
+
+// LoginOptions 只回 login_mask（v1.5 用户裁定：匿名面最小化——配置全量投影
+// 回归登录态，白名单只留本端点）。
+func (s *Service) LoginOptions(ctx context.Context) (*LoginOptionsView, error) {
+	snap, err := s.provider.Snapshot(ctx, dloginconfig.TypeAdmin)
+	if err != nil {
+		return nil, err
+	}
+	return &LoginOptionsView{LoginMask: snap.Config.LoginMask}, nil
+}
+
 // Update 全量更新（§5/§6）：
 // 行必须已存在（缺失 → 30048，用 reset 建行）→ extras 合并（未知 key 保留）→
 // §6 服务端校验（规则 1/2/3/4/5/6/8）→ 等级按明细反推（规则 7）→ 乐观锁保存 →

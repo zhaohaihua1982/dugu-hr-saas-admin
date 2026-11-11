@@ -32,8 +32,21 @@ func parseConfigType(ctx *gin.Context) (dloginconfig.ConfigType, error) {
 	return t, nil
 }
 
-// GetAdmin GET /admin/login-configs-admin —— 管理后台登录配置（写死 config_type=1）。
-// 投影：前端编辑页绑定字段 + version（docs 登录配置设计 §11.2-④）。
+// LoginOptions GET /admin/login-options —— 登录方式选项（白名单匿名可读）。
+// 登录页专用最小投影：只回 login_mask（§2.1 前端按位渲染登录 tab）。
+// v1.5 用户裁定：配置全量投影（-admin）回归登录态，匿名面只留此端点。
+func (p *LoginConfigAPI) LoginOptions(ctx *gin.Context) {
+	v, err := p.svc.LoginOptions(ctx.Request.Context())
+	if err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	ctl.RespSuccess(ctx, v)
+}
+
+// GetAdmin GET /admin/login-configs-admin —— 管理后台登录配置（写死 config_type=1；
+// 需登录态，v1.5 用户裁定：配置页数据不对匿名开放）。
+// 投影：前端编辑页绑定字段 + version（docs 登录配置设计 §11.2-⑩）。
 // v1.3 用户裁定：不设租户读取端——管理后台不拉租户数据；租户配置随租户登录
 // 模块（/api/v1/tenant/* 体系）落地时再在彼侧定义接口。
 func (p *LoginConfigAPI) GetAdmin(ctx *gin.Context) {
