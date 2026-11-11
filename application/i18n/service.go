@@ -28,11 +28,12 @@ func audit(action string, opUID int64, p types.RequestParams, extra map[string]i
 
 // MetaView GET /i18n/meta?resType= —— 前端渲染译文编辑 tab 所需的全部静态信息。
 type MetaView struct {
-	ResType     string         `json:"resType"`
-	Label       string         `json:"label"`
-	Fields      map[string]int `json:"fields"`      // 字段 → 长度上限
-	Langs       []string       `json:"langs"`       // i18n.Languages() 全量
-	DefaultLang string         `json:"defaultLang"` // 不进译文表（§7.4）
+	ResType     string           `json:"resType"`
+	Label       string           `json:"label"`
+	Fields      map[string]int   `json:"fields"`      // 字段 → 长度上限
+	Langs       []string         `json:"langs"`       // i18n.Languages() 全量
+	DefaultLang string           `json:"defaultLang"` // 不进译文表（§7.4）
+	LangBits    map[string]int64 `json:"langBits"`    // 语言→掩码位枚举（bit.go langBits；前端反解 langMask 用，v1.8）
 }
 
 // TextsView GET /i18n/texts —— 某资源全部译文（表单回填）。
@@ -120,8 +121,12 @@ func (s *Service) Meta(ctx context.Context, resType string) (*MetaView, error) {
 	for _, l := range i18n.Languages() {
 		langs = append(langs, string(l))
 	}
+	bits := make(map[string]int64, 3)
+	for l, b := range di18n.Bits() {
+		bits[string(l)] = b
+	}
 	return &MetaView{ResType: string(r), Label: spec.Label, Fields: spec.Fields,
-		Langs: langs, DefaultLang: string(i18n.Default())}, nil
+		Langs: langs, DefaultLang: string(i18n.Default()), LangBits: bits}, nil
 }
 
 // TextsList GET /i18n/texts（不传 resId）—— 译文总览分页（**直接读 sys_i18n_text 行，

@@ -43,3 +43,13 @@ func FullMask(exclude Lang) int64 {
 	}
 	return m
 }
+
+// Bits 语言→位的完整枚举（只读拷贝；GET /i18n/meta 透出给前端，
+// 前端用 langMask & bit 反解"已录入语言"，避免前端再硬编码一份位表）。
+func Bits() map[Lang]int64 {
+	out := make(map[Lang]int64, len(langBits))
+	for l, b := range langBits {
+		out[l] = b
+	}
+	return out
+}
