@@ -1,4 +1,6 @@
-// 登录配置管理接口（docs/系统管理-登录配置设计.md §5）。
+// 登录配置管理接口（docs/系统管理-登录配置设计.md §5；v1.2 用户裁定：
+// 读取端按端固定投影——GET -admin 写死管理后台配置，GET -tenant 预留留空；
+// 原 GET 列表/GET :type 详情撤销）。
 package v1
 
 import (
@@ -17,9 +19,9 @@ type LoginConfigAPI struct{ svc *apploginconfig.Service }
 // NewLoginConfigAPI 构造。
 func NewLoginConfigAPI(svc *apploginconfig.Service) *LoginConfigAPI { return &LoginConfigAPI{svc} }
 
-// parseConfigType 路径参数 :type → ConfigType（非法 → 30048）。
+// parseConfigType 路径参数 :type → ConfigType（PUT/reset 用；非法 → 30048）。
 func parseConfigType(ctx *gin.Context) (dloginconfig.ConfigType, error) {
-	n, err := strconv.ParseInt(ctx.Param("type"), 10, 16)
+	n, err := strconv.ParseInt(ctx.Param("type"), 10, 8)
 	if err != nil {
 		return 0, dloginconfig.ErrNotFound
 	}
@@ -30,24 +32,21 @@ func parseConfigType(ctx *gin.Context) (dloginconfig.ConfigType, error) {
 	return t, nil
 }
 
-// List GET /admin/login-configs —— 两种类型各一行（含兜底横幅 fallback）。
-func (p *LoginConfigAPI) List(ctx *gin.Context) {
-	list, err := p.svc.List(ctx.Request.Context())
+// GetAdmin GET /admin/login-configs-admin —— 管理后台登录配置（写死 config_type=1）。
+// 投影：前端编辑页绑定字段 + version（docs 登录配置设计 §11.2-④）。
+func (p *LoginConfigAPI) GetAdmin(ctx *gin.Context) {
+	v, err := p.svc.AdminSettings(ctx.Request.Context())
 	if err != nil {
 		ErrorResponse(ctx, err)
 		return
 	}
-	ctl.RespSuccess(ctx, list)
+	ctl.RespSuccess(ctx, v)
 }
 
-// Get GET /admin/login-configs/:type —— 单条详情。
-func (p *LoginConfigAPI) Get(ctx *gin.Context) {
-	t, err := parseConfigType(ctx)
-	if err != nil {
-		ErrorResponse(ctx, err)
-		return
-	}
-	v, err := p.svc.Get(ctx.Request.Context(), t)
+// GetTenant GET /admin/login-configs-tenant —— 租户登录配置（预留，先留空 data:null；
+// 租户登录模块落地后返回同形状投影）。
+func (p *LoginConfigAPI) GetTenant(ctx *gin.Context) {
+	v, err := p.svc.TenantSettings(ctx.Request.Context())
 	if err != nil {
 		ErrorResponse(ctx, err)
 		return

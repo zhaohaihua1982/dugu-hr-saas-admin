@@ -140,10 +140,11 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		admin.DELETE("dict-items/:id", dictAPI.DeleteItem)
 
 		// 登录配置管理（docs 系统管理-登录配置设计.md §5；登录即可见，独立权限点
-		// system:login-config:write 待权限模块落地后挂载——当前与字典同策略）：
-		// login-configs/:type 参数路由共存：GET 列表 / GET :type 详情 / PUT 全量更新 / POST reset
-		admin.GET("login-configs", loginCfgAPI.List)
-		admin.GET("login-configs/:type", loginCfgAPI.Get)
+		// system:login-config:write 待权限模块落地后挂载——当前与字典同策略）。
+		// v1.2 用户裁定：读取端按端固定投影——-admin 写死管理后台配置（按前端所需
+		// 字段投影），-tenant 预留留空；写入端仍按 :type（PUT 全量 / POST reset）。
+		admin.GET("login-configs-admin", loginCfgAPI.GetAdmin)
+		admin.GET("login-configs-tenant", loginCfgAPI.GetTenant)
 		admin.PUT("login-configs/:type", loginCfgAPI.Update)
 		admin.POST("login-configs/:type/reset", loginCfgAPI.Reset)
 	}
