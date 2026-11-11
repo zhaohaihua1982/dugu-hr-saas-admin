@@ -129,29 +129,32 @@ func (s *Service) Meta(ctx context.Context, resType string) (*MetaView, error) {
 		Langs: langs, DefaultLang: string(i18n.Default()), LangBits: bits}, nil
 }
 
-// TextsList GET /i18n/texts（不传 resId）—— 译文总览分页（**直接读 sys_i18n_text 行，
-// 非聚合 v1.6 + 正常分页 v1.7**）：items = 翻译表行的直接投影，不再 join 主表取
-// key/source（前端按 resId 向资源接口另取可读名）。page/page_size/total 与
-// sys-users 列表同一形状（snake_case 沿用仓库惯例）；缺译 = 空串非缺键；
-// texts 无默认语言键（§7.4，存储本身排除）。
+// TextsList GET /i18n/texts（不传 resId）—— 译文总览分页（**DB 原样投影 v1.9**：
+// 用户裁定"直接读数据库，不要有任何加工"）——items = sys_i18n_text 行原样：
+// texts 是库里存储的 JSON 串（不解码、不补缺译键、不剔默认语言），lang_mask/
+// complete/deleted_at/时间原样；不透出 label/langs/defaultLang 等衍生信息
+// （meta 接口已承载）。仅保留分页（page/page_size/total）与 deleted_at=0
+// 范围过滤——那是查询范围，不是数据加工。id/res_id 字符串化是序列化层契约
+// （雪花 19 位超 JS Number 安全整数），不是数据加工。
 type TextsList struct {
-	Items       []TextsItem `json:"items"`
-	Total       int64       `json:"total"`
-	Page        int         `json:"page"`
-	PageSize    int         `json:"page_size"`
-	ResType     string      `json:"resType"`
-	Label       string      `json:"label"`
-	DefaultLang string      `json:"defaultLang"`
-	Langs       []string    `json:"langs"` // 非默认语言的已注册语言全量（texts 的键域）
+	Items    []TextsItem `json:"items"`
+	Total    int64       `json:"total"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"page_size"`
 }
 
-// TextsItem 译文总览单行：翻译表一行的直接投影。
+// TextsItem 译文总览单行：DB 行原样。
 type TextsItem struct {
-	ResID    string            `json:"resId"` // 雪花ID字符串（语言中立响应约定）
-	Field    string            `json:"field"`
-	Texts    map[string]string `json:"texts"`    // lang → 译文（缺译 = 空串）
-	LangMask int64             `json:"langMask"` // 位掩码（bit.go langBits，前端渲染已录入语言）
-	Complete bool              `json:"complete"` // 非默认语言全部录入（缺译清单可 WHERE complete=0 直达）
+	ID        int64  `json:"id"` // 行雪花ID
+	ResType   string `json:"res_type"`
+	ResID     string `json:"res_id"`
+	Field     string `json:"field"`
+	Texts     string `json:"texts"`     // DB 原样 JSON 串
+	LangMask  int64  `json:"lang_mask"` // 原样数值（位含义见 meta.langBits）
+	Complete  int8   `json:"complete"`  // 原样数值 0/1
+	DeletedAt int64  `json:"deleted_at"`
+	CreatedAt string `json:"created_at"` // DB 存储形态 yyyy-MM-dd HH:mm:ss.SSS
+	UpdatedAt string `json:"updated_at"`
 }
 
 // Texts 查（resId 二选一，§7.5 v1.4 起 resId 非必填）：
@@ -169,7 +172,7 @@ func (s *Service) Texts(ctx context.Context, resType, field, resIDStr string, pa
 	return s.textsOf(ctx, r, spec, resIDStr)
 }
 
-// listTexts 直读行分页（非聚合：无主表 join、无 Snapshot——COUNT+分页两条 SQL）。
+// listTexts DB 原样投影分页（无解码/无补键/无语言过滤——COUNT+分页两条 SQL）。
 func (s *Service) listTexts(ctx context.Context, r di18n.Resource, spec di18n.Spec, field string, page, pageSize int) (*TextsList, error) {
 	if field != "" && !di18n.HasField(r, field) {
 		return nil, di18n.ErrTargetUnregistered // 30038：field 必须在白名单内
@@ -178,30 +181,18 @@ func (s *Service) listTexts(ctx context.Context, r di18n.Resource, spec di18n.Sp
 	if err != nil {
 		return nil, err
 	}
-	def := i18n.Default()
-	outLangs := make([]string, 0, 4)
-	for _, l := range i18n.Languages() {
-		if l == def {
-			continue
-		}
-		outLangs = append(outLangs, string(l))
-	}
 	items := make([]TextsItem, 0, len(rows))
 	for _, row := range rows {
-		texts := make(map[string]string, len(outLangs))
-		for _, l := range outLangs {
-			texts[l] = row.Texts[di18n.Lang(l)]
-		}
 		items = append(items, TextsItem{
-			ResID: strconv.FormatInt(row.ResID, 10), Field: row.Field,
-			Texts: texts, LangMask: row.LangMask, Complete: row.Complete,
+			ID: row.ID, ResType: row.ResType, ResID: strconv.FormatInt(row.ResID, 10),
+			Field: row.Field, Texts: row.Texts, LangMask: row.LangMask,
+			Complete: row.Complete, DeletedAt: row.DeletedAt,
+			CreatedAt: row.CreatedAt.Format("2006-01-02 15:04:05.000"),
+			UpdatedAt: row.UpdatedAt.Format("2006-01-02 15:04:05.000"),
 		})
 	}
 	page, size := normalizePageLocal(page, pageSize)
-	return &TextsList{
-		Items: items, Total: total, Page: page, PageSize: size,
-		ResType: string(r), Label: spec.Label, DefaultLang: string(def), Langs: outLangs,
-	}, nil
+	return &TextsList{Items: items, Total: total, Page: page, PageSize: size}, nil
 }
 
 // normalizePageLocal 与 dao.normalizePage 同一规则（page≤0→1、size≤0→10、>100→100）；

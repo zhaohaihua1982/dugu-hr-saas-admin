@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	pi18n "dugu-hr-saas-admin/pkg/i18n"
 )
@@ -192,16 +193,21 @@ type Repo interface {
 	DeleteAll(ctx context.Context, r Resource, id int64) error
 }
 
-// Row 译文总览行（**非聚合**，v1.6）：sys_i18n_text 合并粒度行的直接投影——
-// 不做主表 join，key/source 由前端按 resId 向资源接口另取。
-// texts 不含默认语言（§7.4，存储本身排除）；LangMask/Complete 原样透出
-// （掩码位含义 = domain/i18n/bit.go langBits，前端渲染"已录入语言"用）。
+// Row 译文总览行（**DB 原样投影，v1.9 用户裁定：直接读数据库，不做任何加工**）：
+// texts = 库里存储的 JSON 串原样（不解码、不补缺译键、不剔默认语言）；
+// lang_mask/complete/deleted_at 原样数值；时间原样透传。
+// 唯一保留的两个过滤：deleted_at=0（墓碑不进列表）与分页——那是查询范围，不是数据加工。
 type Row struct {
-	ResID    int64
-	Field    string
-	Texts    map[Lang]string
-	LangMask int64
-	Complete bool
+	ID        int64
+	ResType   string
+	ResID     int64
+	Field     string
+	Texts     string // DB 原样 JSON 串：{"lang":"译文",...}（键序为落库序）
+	LangMask  int64
+	Complete  int8
+	DeletedAt int64
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // DelKey 批量删除的操作对象：四元组（§7.1——CRUD 主键不是行 id）。

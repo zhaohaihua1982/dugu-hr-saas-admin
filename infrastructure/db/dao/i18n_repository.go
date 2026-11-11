@@ -117,10 +117,11 @@ func (r *I18nRepository) Save(ctx context.Context, res di18n.Resource, id int64,
 	})
 }
 
-// ListRows 译文总览分页（非聚合 + 正常分页，v1.7）：直接读 sys_i18n_text 合并粒度行。
-// COUNT（total）+ Limit/Offset 两阶段，与 sys-users 列表同一 normalizePage 惯例
-// （page≤0→1、size≤0→10、size>100→100）。排序恒 (res_id, field) 升序——输出确定；
-// 页边界可能截断同资源多字段行，属常规列表语义（page/page_size 的固有行为）。
+// ListRows 译文总览分页（DB 原样投影 + 正常分页，v1.9 用户裁定）：直接读
+// sys_i18n_text 合并粒度行，**不做任何数据加工**——texts 原样 JSON 串、
+// lang_mask/complete/deleted_at 原样数值、时间原样透传；不解码、不补键、不剔语言。
+// COUNT（total）+ Limit/Offset 两阶段，与 sys-users 列表同一 normalizePage 惯例。
+// 排序 (res_id, field) 升序；deleted_at=0 过滤（墓碑不进列表——查询范围，非数据加工）。
 func (r *I18nRepository) ListRows(ctx context.Context, res di18n.Resource, field string, page, pageSize int) ([]di18n.Row, int64, error) {
 	page, size := normalizePage(page, pageSize)
 	base := r.d.WithContext(ctx).
@@ -132,8 +133,7 @@ func (r *I18nRepository) ListRows(ctx context.Context, res di18n.Resource, field
 	if err := base.Session(&gorm.Session{}).Model(&po.SysI18nText{}).Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("i18n.list_rows.count: %w", err)
 	}
-	q := base.
-		Select("res_id", "field", "texts", "lang_mask", "complete")
+	q := base.Select("id", "res_type", "res_id", "field", "texts", "lang_mask", "complete", "deleted_at", "created_at", "updated_at")
 	if field != "" {
 		q = q.Order("res_id ASC")
 	} else {
@@ -146,8 +146,9 @@ func (r *I18nRepository) ListRows(ctx context.Context, res di18n.Resource, field
 	out := make([]di18n.Row, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, di18n.Row{
-			ResID: row.ResID, Field: row.Field, Texts: decodeTexts(row.Texts),
-			LangMask: row.LangMask, Complete: row.Complete == 1,
+			ID: row.ID, ResType: row.ResType, ResID: row.ResID, Field: row.Field,
+			Texts: row.Texts, LangMask: row.LangMask, Complete: row.Complete,
+			DeletedAt: row.DeletedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		})
 	}
 	return out, total, nil
