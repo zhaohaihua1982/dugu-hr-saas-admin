@@ -5,7 +5,10 @@ package dao
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 
+	"dugu-hr-saas-admin/domain/authn"
 	di18n "dugu-hr-saas-admin/domain/i18n"
 	"dugu-hr-saas-admin/infrastructure/db"
 	"dugu-hr-saas-admin/infrastructure/db/po"
@@ -55,6 +58,50 @@ func (menuI18nResolver) PermWrite() string { return "menu:update" } // 声明并
 type dictItemI18nResolver struct{ d *db.DB }
 
 func (dictItemI18nResolver) PermWrite() string { return "dict:update" } // 预留
+
+// BackfillMenuI18nRows 存量菜单译文行回填（v1.14 用户裁定：所有菜单数据在
+// 统一表初始化一份记录——与"菜单创建必插空行"语义对齐）。
+// 幂等：只为"没有活译文行"的活菜单插空行（texts='{}'、mask/complete=0）；
+// 已有行（含 zh-TW 等已录译文）一律不动。返回新建行数。
+func BackfillMenuI18nRows(ctx context.Context, d *db.DB, ids authn.IDGenerator) (int64, error) {
+	var menuIDs []int64
+	if err := d.WithContext(ctx).Model(&po.SysMenu{}).
+		Where("deleted_at = 0").
+		Order("id ASC").Pluck("id", &menuIDs).Error; err != nil {
+		return 0, fmt.Errorf("菜单行回填: 读活菜单: %w", err)
+	}
+	if len(menuIDs) == 0 {
+		return 0, nil
+	}
+	have := map[int64]bool{}
+	var rows []po.SysI18nText
+	if err := d.WithContext(ctx).Model(&po.SysI18nText{}).
+		Select("res_id").
+		Where("res_type = ? AND field = ? AND deleted_at = 0", "menu", "name").
+		Find(&rows).Error; err != nil {
+		return 0, fmt.Errorf("菜单行回填: 读已有译文行: %w", err)
+	}
+	for _, r := range rows {
+		have[r.ResID] = true
+	}
+	var n int64
+	for _, mid := range menuIDs {
+		if have[mid] {
+			continue
+		}
+		row := po.SysI18nText{
+			ID: ids.New(), ResType: "menu", ResID: mid, Field: "name", Texts: "{}",
+		}
+		if err := d.WithContext(ctx).Create(&row).Error; err != nil {
+			return n, fmt.Errorf("菜单行回填: 插入 menu/%d: %w", mid, err)
+		}
+		n++
+	}
+	if n > 0 {
+		slog.Info("菜单译文空行回填完成", "menus", len(menuIDs), "inserted", n)
+	}
+	return n, nil
+}
 
 // RegisterI18nResolvers 启动期把已落地资源的 Resolver 挂入 domain 注册表（幂等）。
 // 目前：menu（已落地）。dict_item 待字典 DAO 实现后在此追加。

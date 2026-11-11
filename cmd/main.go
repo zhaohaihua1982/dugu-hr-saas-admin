@@ -166,6 +166,12 @@ func assemble(ctx context.Context) (*assembled, error) {
 	// ---------- application ----------
 	// 资源 Resolver 注册（docs 基础设施-i18n设计 §7.3）：menu 已落地；dict_item 随字典模块追加。
 	dao.RegisterI18nResolvers(database)
+	if n, bErr := dao.BackfillMenuI18nRows(ctx, database, ids); bErr != nil {
+		_ = database.Close()
+		return nil, bErr
+	} else if n > 0 {
+		slog.Info("存量菜单译文行回填", "inserted", n)
+	}
 
 	svc := &application.Services{
 		Auth: appauth.NewService(users, logsRepo, tokens, sessions, captchaSvc,
