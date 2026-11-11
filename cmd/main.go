@@ -166,6 +166,12 @@ func assemble(ctx context.Context) (*assembled, error) {
 	// ---------- application ----------
 	// 资源 Resolver 注册（docs 基础设施-i18n设计 §7.3）：menu 已落地；dict_item 随字典模块追加。
 	dao.RegisterI18nResolvers(database)
+	if swept, sErr := dao.SweepOrphanI18nRows(ctx, database); sErr != nil {
+		_ = database.Close()
+		return nil, sErr
+	} else if swept > 0 {
+		slog.Info("启动孤儿译文清扫", "swept", swept)
+	}
 
 	svc := &application.Services{
 		Auth: appauth.NewService(users, logsRepo, tokens, sessions, captchaSvc,
