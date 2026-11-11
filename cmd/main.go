@@ -172,6 +172,13 @@ func assemble(ctx context.Context) (*assembled, error) {
 	} else if n > 0 {
 		slog.Info("存量菜单译文行回填", "inserted", n)
 	}
+	// complete 全表重算（§2.4：语言集变化/默认语言切换后快照失效；v1.15 新增 ja/ko/es）。
+	if n, rErr := dao.RecompleteI18nRows(ctx, database); rErr != nil {
+		_ = database.Close()
+		return nil, rErr
+	} else if n > 0 {
+		slog.Info("译文 complete 全表重算", "rows", n)
+	}
 
 	svc := &application.Services{
 		Auth: appauth.NewService(users, logsRepo, tokens, sessions, captchaSvc,

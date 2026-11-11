@@ -30,7 +30,7 @@ func TestValidateTarget(t *testing.T) {
 		{"资源未登记", Resource("dept"), "name", "en-US", "D", ErrTargetUnregistered},
 		{"字段未登记(标识字段直接拒)", ResMenu, "path", "en-US", "/x", ErrTargetUnregistered},
 		{"字段未登记(其他资源的字段名)", ResMenu, "label", "en-US", "D", ErrTargetUnregistered},
-		{"语言未注册", ResMenu, "name", "ja-JP", "D", ErrLangUnsupported},
+		{"语言未注册", ResMenu, "name", "fr-FR", "D", ErrLangUnsupported},
 		{"超长(64+1)", ResMenu, "name", "en-US", strings.Repeat("a", 65), ErrContentInvalid},
 		{"正好64", ResMenu, "name", "en-US", strings.Repeat("a", 64), nil},
 		{"含NUL", ResMenu, "name", "en-US", "a\x00b", ErrContentInvalid},

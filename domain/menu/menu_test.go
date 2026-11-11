@@ -62,7 +62,7 @@ func TestValidateRequiredForAll(t *testing.T) {
 
 func TestValidateLangUnsupported(t *testing.T) {
 	m := baseMenu()
-	m.Names = map[string]string{"ja-JP": "ユーザー"} // 未注册语言
+	m.Names = map[string]string{"fr-FR": "Utilisateur"} // 未注册语言
 	if err := m.Validate(); err != ErrLangUnsupported {
 		t.Fatalf("未注册语言应报 ErrLangUnsupported, got %v", err)
 	}

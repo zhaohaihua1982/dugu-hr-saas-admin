@@ -12,7 +12,7 @@ func TestRegisteredLanguages(t *testing.T) {
 	if len(langs) < 3 {
 		t.Fatalf("至少应注册 zh-CN/zh-TW/en-US 三个语言包，实际 %v", langs)
 	}
-	for _, want := range []Lang{LangZH, "zh-TW", LangEN} {
+	for _, want := range []Lang{LangZH, "zh-TW", LangEN, "ja-JP", "ko-KR", "es-ES"} {
 		if !Supported(want) {
 			t.Fatalf("语言 %s 未注册: %v", want, langs)
 		}
@@ -20,7 +20,7 @@ func TestRegisteredLanguages(t *testing.T) {
 	if !Supported("en_us") || !Supported("EN-US") {
 		t.Fatal("大小写/下划线写法应归一化命中")
 	}
-	if Supported("ja-JP") {
+	if Supported("fr-FR") {
 		t.Fatal("未注册语言不应命中")
 	}
 }
@@ -63,7 +63,7 @@ func TestSetDefaultLangAndEnv(t *testing.T) {
 		t.Fatal("SAAS_LANG 应命中 en-US")
 	}
 
-	t.Setenv("SAAS_LANG", "ja-JP")
+	t.Setenv("SAAS_LANG", "fr-FR")
 	if Default() != LangZH {
 		t.Fatal("未注册语言应回退 zh-CN")
 	}
@@ -80,7 +80,8 @@ func TestFromAccept(t *testing.T) {
 		{"en-US;q=0.9,zh-CN;q=0.5", LangEN},
 		{"en", LangEN}, // 裸主语言唯一命中
 		{"en-US,en;q=0.8", LangEN},
-		{"ja-JP", defaultLangAt()}, // 未注册 → 回退链
+		{"ja-JP", "ja-JP"},         // 已注册语言直接命中
+		{"fr-FR", defaultLangAt()}, // 未注册 → 回退链
 	}
 	for _, c := range cases {
 		Reset()
@@ -93,7 +94,7 @@ func TestFromAccept(t *testing.T) {
 	SetDefaultLang(LangEN)
 	Reset()
 	SetDefaultLang(LangEN)
-	if got := FromAccept("ja-JP"); got != LangEN {
+	if got := FromAccept("fr-FR"); got != LangEN {
 		t.Errorf("显式默认语言应参与回退，got %q", got)
 	}
 	Reset()

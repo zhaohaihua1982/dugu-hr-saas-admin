@@ -17,17 +17,20 @@ func TestLangBitsCoverRegistered(t *testing.T) {
 }
 
 func TestFullMaskExcludesDefault(t *testing.T) {
-	got := FullMask(pi18n.Default()) // 默认 zh-CN → 只含 zh-TW(2) | en-US(4)
-	if got != 6 {
-		t.Fatalf("FullMask(zh-CN) = %d, want 6", got)
+	got := FullMask(pi18n.Default()) // 默认 zh-CN → zh-TW(2)|en-US(4)|ja-JP(8)|ko-KR(16)|es-ES(32)
+	if got != 62 {
+		t.Fatalf("FullMask(zh-CN) = %d, want 62", got)
 	}
-	if FullMask("zh-TW") != 5 { // 排除 zh-TW → zh-CN(1) | en-US(4)
-		t.Fatalf("FullMask(zh-TW) = %d, want 5", FullMask("zh-TW"))
+	if FullMask("zh-TW") != 61 { // 排除 zh-TW → zh-CN(1)|en-US(4)|ja-JP(8)|ko-KR(16)|es-ES(32)
+		t.Fatalf("FullMask(zh-TW) = %d, want 61", FullMask("zh-TW"))
 	}
 }
 
 func TestLangBitValues(t *testing.T) { // 位值落库即事实，改动必须过评审（docs §2.4）
-	for l, want := range map[Lang]int64{"zh-CN": 1, "zh-TW": 2, "en-US": 4} {
+	for l, want := range map[Lang]int64{
+		"zh-CN": 1, "zh-TW": 2, "en-US": 4,
+		"ja-JP": 8, "ko-KR": 16, "es-ES": 32, // v1.15 追加位（只许追加）
+	} {
 		if got, ok := LangBit(l); !ok || got != want {
 			t.Fatalf("LangBit(%s) = %d,%v; want %d", l, got, ok, want)
 		}

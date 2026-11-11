@@ -192,6 +192,17 @@ func (r *I18nRepository) ListMissing(ctx context.Context, res di18n.Resource, fi
 	return out, total, nil
 }
 
+// RecompleteI18nRows 全表重算 complete（§2.4：新增语言/切默认语言时必须全表重算——
+// complete 是写入时的快照，语言集变化后旧值失效；v1.15 新增 ja/ko/es 后启动重算）。
+// 幂等、每次启动执行；lang_mask 不动（已录语言的位不随语言集变化）。
+func RecompleteI18nRows(ctx context.Context, d *db.DB) (int64, error) {
+	full := di18n.FullMask(pi18n.Default())
+	q := d.WithContext(ctx).Exec(
+		"UPDATE sys_i18n_text SET complete = IF(? <> 0 AND lang_mask & ? = ?, 1, 0) WHERE deleted_at = 0",
+		full, full, full)
+	return q.RowsAffected, q.Error
+}
+
 // DeleteAll 软删该资源全部译文行（合并粒度下墓碑 = 资源 × 字段整行；
 // 资源删除场景请走同事务的 deleteAllTx，本方法供"单独清理"使用）。
 func (r *I18nRepository) DeleteAll(ctx context.Context, res di18n.Resource, id int64) error {
