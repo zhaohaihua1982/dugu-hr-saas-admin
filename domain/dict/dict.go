@@ -83,19 +83,31 @@ type Type struct {
 	UpdatedAt time.Time
 }
 
+// BadField 参数校验失败的字段提示：包装 ErrBadParams（errors.Is 语义不变），
+// api 层读 Field 放进 30046 响应的 data（v1.5：30046 不再是"黑盒"）。
+type BadField struct {
+	Field string
+	Err   error
+}
+
+func (e *BadField) Error() string { return e.Err.Error() + " [" + e.Field + "]" }
+func (e *BadField) Unwrap() error { return e.Err }
+
+func badParam(field string) error { return &BadField{Field: field, Err: ErrBadParams} }
+
 // Validate 保存前字段级校验（docs §5）。
 func (t *Type) Validate() error {
 	if !codeRe.MatchString(t.Code) {
-		return ErrBadParams
+		return badParam("code") // ^[a-z][a-z0-9_]{1,63}$ 小写蛇形
 	}
 	if strings.TrimSpace(t.Name) == "" || len(t.Name) > maxName {
-		return ErrBadParams
+		return badParam("name")
 	}
 	if t.Status != StatusOn && t.Status != StatusOff {
-		return ErrBadParams
+		return badParam("status")
 	}
 	if len(t.Remark) > maxRemark {
-		return ErrBadParams
+		return badParam("remark")
 	}
 	return nil
 }
@@ -128,19 +140,19 @@ func (i *Item) DisplayLabel(lang i18n.Lang) string {
 // 必须已注册（否则 30035）、译文非空 ≤64、提交语言数 ≤ 已注册语言数（防脏 key）。
 func (i *Item) Validate() error {
 	if !valueRe.MatchString(i.Value) || len(i.Value) > maxValue {
-		return ErrBadParams
+		return badParam("value") // [A-Za-z0-9_.:-] 禁空格/斜杠/中文
 	}
 	if strings.TrimSpace(i.Label) == "" || len(i.Label) > maxLabel {
-		return ErrBadParams
+		return badParam("label")
 	}
 	if i.Status != StatusOn && i.Status != StatusOff {
-		return ErrBadParams
+		return badParam("status")
 	}
 	if i.Sort < 0 {
-		return ErrBadParams
+		return badParam("sort")
 	}
 	if len(i.Remark) > maxRemark {
-		return ErrBadParams
+		return badParam("remark")
 	}
 	regs := i18n.Registered()
 	for l, v := range i.Labels {
@@ -148,11 +160,11 @@ func (i *Item) Validate() error {
 			return ErrLangUnsupported
 		}
 		if strings.TrimSpace(v) == "" || len(v) > maxLabel {
-			return ErrBadParams
+			return badParam("labels." + l)
 		}
 	}
 	if len(i.Labels) > len(regs) { // 提交语言数 ≤ 已注册语言数（防脏 key 撑爆，docs §5）
-		return ErrBadParams
+		return badParam("labels")
 	}
 	return nil
 }

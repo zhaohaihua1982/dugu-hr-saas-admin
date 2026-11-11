@@ -15,6 +15,7 @@ import (
 	appsysuser "dugu-hr-saas-admin/application/sysuser"
 	"dugu-hr-saas-admin/application/types"
 	"dugu-hr-saas-admin/domain/authn"
+	ddict "dugu-hr-saas-admin/domain/dict"
 	"dugu-hr-saas-admin/pkg/code"
 	"dugu-hr-saas-admin/pkg/utils/ctl"
 )
@@ -48,6 +49,13 @@ func ErrorResponse(ctx *gin.Context, err error) {
 			fields = append(fields, e.Field())
 		}
 		ctl.RespError(ctx, err, code.InvalidParams, fields)
+		return
+	}
+	// 字典 30046 带违规字段提示（v1.5）：BadField 包装保持 errors.Is 语义，
+	// data=[字段名] 让前端/联调一眼定位是哪个参数不合法。
+	var bf *ddict.BadField
+	if errors.As(err, &bf) {
+		ctl.RespError(ctx, err, application.CodeOf(err), []string{bf.Field})
 		return
 	}
 	ctl.RespError(ctx, err, application.CodeOf(err), nil)

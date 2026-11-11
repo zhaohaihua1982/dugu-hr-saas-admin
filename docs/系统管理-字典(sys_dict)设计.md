@@ -1,7 +1,8 @@
 # 系统管理-字典（sys_dict）设计
 
-> 版本 v1.4 · 2026-11-10 · 从《系统管理-菜单·配置·字典设计.md》拆出（原文档 §3 / §4 / §5 / §6 / §10 的字典部分）
+> 版本 v1.5 · 2026-11-11 · 从《系统管理-菜单·配置·字典设计.md》拆出（原文档 §3 / §4 / §5 / §6 / §10 的字典部分）
 > 创建：2026-11-10 · 最后修改：2026-11-11
+> v1.5 变更：`GET /dict-items` 增加 `manage=1` 管理视图，返回字典项 id、排序、状态和备注，供后台编辑、删除、启停及多语言入口使用；不传时仍保持 `{value,label}` 下拉契约。
 > v1.4 变更：**启停语义补全（用户裁定两项，§2/§3/§4/§11.2）**：① 类型停用连带项不下发——命中停用类型 → 新错误码 `30047`，`withDisabled=1` 升级为管理回显通道（两级放行）；② 新增独立启停端点 `POST /dict-types/:id/status`、`POST /dict-items/:id/status`。v1.3 见下方变更记录
 > v1.3 变更：**模块落地实现**（§11 实现记录）：两表 DDL 按迁移器"一条一文件"惯例拆 `sys_dict_type.sql` / `sys_dict_item.sql` 交付；seed 译文段随统一表合并粒度改写（一行 = 资源×字段 texts JSON，默认语言 zh-CN 不进译文表，§7.4）；接口分页参数按仓库惯例用 `page_size`（§3 原写 `pageSize`）；`PUT /dict-items/:id` 不收 `typeCode`（项归属类型不可变）。接口契约其余不变
 > v1.2 变更：多语言**存储改走统一表 `sys_i18n_text`**（`res_type='dict_item'`、`field='label'`），本文自建的 `sys_dict_item_i18n` 撤销；接口契约（`?lang=` / `labels`）不变。见 `基础设施-数据文案多语言(i18n)设计.md`
@@ -137,6 +138,7 @@ POST   /api/v1/admin/dict-types/:id/status            body: {status: 0|1}   独�
 DELETE /api/v1/admin/dict-types/:id                   逻辑删除；有项则 30045
 
 GET    /api/v1/admin/dict-items?type=import_type&lang=en-US&withDisabled=0
+GET    /api/v1/admin/dict-items?type=import_type&withDisabled=1&manage=1  管理列表（含 id/sort/status/remark）
 GET    /api/v1/admin/dict-items/:id                   详情，含 labels 全集（编辑页回填用）
 POST   /api/v1/admin/dict-items                       body: {typeCode, value, label, labels:{"en-US":"Employee Roster"}, sort?, status?, remark?}
 PUT    /api/v1/admin/dict-items/:id                   同上；labels 可只传部分语言（只覆盖所传语言）
@@ -161,6 +163,8 @@ DELETE /api/v1/admin/dict-items/:id                   逻辑删除
 3. **`?lang=` 缺省 = 默认语言**：前端不传也能正常工作，多语言是增强不是前置条件；
 4. **`labels` 只覆盖所传语言**：PUT 只带 `en-US` 时不动 `zh-TW`，与菜单 `names` 的语义一致（整体覆盖"所传"语言，而非"整表替换"）。
 
+`manage=1` 只供后台字典管理页使用，返回完整 `ItemView`；普通业务下拉不得传该参数，响应继续保持最小 `{value,label}`，避免业务表单依赖内部主键和管理字段。
+
 ---
 
 ## 4. 错误码（30040 段）
@@ -172,7 +176,7 @@ DELETE /api/v1/admin/dict-items/:id                   逻辑删除
 | 30043 | 字典类型编码（code）已存在 |
 | 30044 | 字典项取值（value）在该类型下已存在 |
 | 30045 | 字典类型下存在字典项，禁止删除 |
-| 30046 | 字典参数不合法（code/value 格式、长度、空值、`typeCode` 不存在、labels 语言未注册等） |
+| 30046 | 字典参数不合法（code/value 格式、长度、空值、`typeCode` 不存在、labels 语言未注册等）；**响应 `data` 带违规字段名**（v1.5，如 `["code"]`、`["value"]`、`["typeCode"]`、`["labels.zh-CN"]`） |
 | 30047 | 字典类型已停用，其下字典项不下发（v1.4；`withDisabled=1` 管理通道放行） |
 
 - **30035（语言不被支持）与菜单共用**，不重复申领：`labels` 的 key 必须在 `i18n.Registered()` 内，非法报 30035；
@@ -351,6 +355,8 @@ func (s *Service) DeleteType(ctx context.Context, id int64) error
 
 1. **类型停用连带项不下发**：`GET /dict-items?type=` 命中 `status=0` 的类型 → `30047`（新申领，`pkg/code` + msg + 六语言包五处同步）；`withDisabled=1` 升级为**管理回显通道**——同时放行"类型停用检查"与"停用项下发"两级，编辑页取全量走它，默认下拉通道两级都拦；
 2. **独立启停端点**：`POST /dict-types/:id/status`、`POST /dict-items/:id/status`（body `{status:0|1}`，`required` + `oneof`）；与 PUT 更新并存——前端开关按钮一次一个动作更直观，PUT 仍可批量带 status；审计动作 `dict.type.status` / `dict.item.status`。
+3. **30046 带违规字段提示**（v1.5，排查驱动：上线联调时 30046 裸码无法定位字段）：domain 校验错误经 `BadField` 包装（`Unwrap` 保 `errors.Is` 语义），api `ErrorResponse` 读 `Field` 放进 `data`——`code`（须 `^[a-z][a-z0-9_]{1,63}$` 小写蛇形）、`value`（须 `[A-Za-z0-9_.:-]`）、`name`/`label`/`status`/`sort`/`remark`/`labels`/`labels.<lang>`、`typeCode`（类型不存在）；日志同步带 `[字段]` 后缀。
+4. **`manage=1` 管理视图**（v1.5，前端字典管理页契约）：`Service.ListItemsManage` 复用 `listItems` 公共读取路径；`label` 按 `?lang=` 解析展示（缺译回退主表列）；`Labels` 置空不回传（列表不回 labels，docs §3 原则）；api 层按 `manage` 参数分支响应形状。
 
 ---
 
@@ -363,3 +369,4 @@ func (s *Service) DeleteType(ctx context.Context, id int64) error
 | v1.2 | 2026-11-10 | **译文存储并入统一表**：撤销自建 `sys_dict_item_i18n`（不建、不迁，字典尚未实现），改存 `sys_i18n_text`（`res_type='dict_item'`、`field='label'`）；§1.1 改写、§1.2 DDL 删子表、§1.3 唯一键改指通用 `uk_i18n`、§7 只留"为什么字典必须多语言"与三条不变式（机制统一由 `基础设施-数据文案多语言(i18n)设计.md` 持有）、§6/§11 执行顺序补 `sys_i18n_text.sql` 在前。**接口契约（`?lang=` / `labels` / 只覆盖所传语言）不变**，前端零改动 |
 | v1.3 | 2026-11-11 | **模块落地实现**（§11.1 实现记录）：两表 DDL 按迁移器"一条一文件"惯例拆两文件交付；seed 译文段随统一表合并粒度改写（单行 texts JSON，zh-CN 键不写，§7.4）；由 `seedDict`（引号感知多语句拆分）在结构迁移后逐条执行；全链路 domain/infra/application/api + 错误码 30041~30046 + `dict_item` Resolver 注册；实测验收 1~8 全过（含 labels 归一化/只覆盖所传语言/软删重建/缺译回退/统一译文接口联动）；实现取舍登记（`page_size` 惯例、`code` 模糊过滤、PUT 不收 `typeCode`、项创建同事务插空译文行） |
 | v1.4 | 2026-11-11 | **启停语义补全（用户裁定）**：① 类型停用连带项不下发（§2 新增规则行、新错误码 30047，`withDisabled=1` 两级放行）；② 独立启停端点 `POST /dict-types/:id/status`、`POST /dict-items/:id/status`（§3 接口清单、§11.2 实现记录）；实测：停用项默认不下发/`withDisabled=1` 带出、停用类型默认下拉 30047/管理通道放行、启停端点生效且审计打点 |
+| v1.5 | 2026-11-11 | **管理视图 + 30046 字段提示**：① `GET /dict-items` 增加 `manage=1` 完整管理视图（返回 `ItemView`：id/value/label/sort/status/remark，后台编辑/删除/启停/多语言入口需要真实主键；普通下拉契约 `{value,label}` 不变；`manage=1` 即管理通道，放行停用类型的项管理，停用项仍由 `withDisabled` 控制；列表不回 labels，译文入口走 `i18n/texts`）；② 30046 校验失败响应 `data:[字段名]`（domain `BadField` 包装，`errors.Is` 语义不变，日志带 `[字段]` 后缀）——动机=联调中裸 30046 无法定位违规字段；实测 code 大写/连字符/中文→`["code"]`、value 中文→`["value"]`、typeCode 拼错→`["typeCode"]` |

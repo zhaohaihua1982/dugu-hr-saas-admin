@@ -1,6 +1,7 @@
 package dict
 
 import (
+	"errors"
 	"testing"
 
 	"dugu-hr-saas-admin/pkg/i18n"
@@ -19,7 +20,7 @@ func TestTypeValidate(t *testing.T) {
 		{Code: "ab", Name: "x", Status: StatusOn, Remark: makeStr(256)}, // remark 超长
 	}
 	for i, b := range bad {
-		if err := b.Validate(); err != ErrBadParams {
+		if err := b.Validate(); !errors.Is(err, ErrBadParams) {
 			t.Fatalf("case %d 应报 ErrBadParams, got %v", i, err)
 		}
 	}
@@ -36,10 +37,10 @@ func TestItemValidate(t *testing.T) {
 	if err := l.Validate(); err != ErrLangUnsupported {
 		t.Fatalf("未注册语言应报 ErrLangUnsupported, got %v", err)
 	}
-	// labels：空译文 → 30046
+	// labels：空译文 → 30046（BadField 包装，errors.Is 仍命中）
 	l2 := &Item{Value: "employee", Label: "员工花名册", Status: StatusOn,
 		Labels: map[string]string{"en-US": "  "}}
-	if err := l2.Validate(); err != ErrBadParams {
+	if err := l2.Validate(); !errors.Is(err, ErrBadParams) {
 		t.Fatalf("空译文应报 ErrBadParams, got %v", err)
 	}
 	bad := []*Item{
@@ -50,7 +51,7 @@ func TestItemValidate(t *testing.T) {
 		{Value: "a", Label: "x", Status: 9},          // status 非法
 	}
 	for i, b := range bad {
-		if err := b.Validate(); err != ErrBadParams {
+		if err := b.Validate(); !errors.Is(err, ErrBadParams) {
 			t.Fatalf("case %d 应报 ErrBadParams, got %v", i, err)
 		}
 	}

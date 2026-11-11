@@ -289,52 +289,51 @@ func (s *Service) DeleteType(ctx context.Context, id int64, opUID int64, p types
 // type=code 定位类型（拼错 → 30046，调用方 bug 必须暴露）；只返回启用项，
 // withDisabled=1 才带停用项；?lang= 决定展示 label（缺省默认语言，缺译回退主表列）。
 func (s *Service) ListItems(ctx context.Context, typeCode, langQuery string, withDisabled bool) ([]OptionView, error) {
-	t, err := s.loadTypeByCode(ctx, typeCode)
-	if err != nil {
-		return nil, err
-	}
-	// 类型停用 → 连带项不下发（用户裁定 v1.4，docs §2）；withDisabled=1 是管理回显
-	// 通道（编辑页取全量），同时放行类型停用检查与停用项下发。
-	if !withDisabled && t.Status != ddict.StatusOn {
-		return nil, ddict.ErrTypeDisabled
-	}
-	lang := i18n.Default()
-	if l, ok := i18n.ParseLang(langQuery); ok {
-		lang = l // 读宽容写严格：未识别 lang 回退默认语言，不报错
-	}
-	items, err := s.items.ListByType(ctx, t.ID, withDisabled, lang)
+	items, err := s.listItems(ctx, typeCode, langQuery, withDisabled, false)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]OptionView, 0, len(items))
 	for i := range items {
-		out = append(out, OptionView{Value: items[i].Value, Label: items[i].DisplayLabel(lang)})
+		out = append(out, OptionView{Value: items[i].Value, Label: items[i].DisplayLabel(resolveLang(langQuery))})
 	}
 	return out, nil
 }
 
-// ListItemsManage 返回后台管理所需的完整字典项字段。下拉接口仍只返回 OptionView，
-// 管理端通过 manage=1 使用此方法，避免把内部 id 暴露给普通业务下拉调用方。
+// ListItemsManage 管理视图（docs §3 v1.5 契约：?manage=1 → 完整 ItemView，
+// 含 id/sort/status/remark——后台编辑/删除/启停/多语言入口需要真实主键）。
+// 只供后台字典管理页；普通业务下拉不得传 manage=1（契约保持最小 {value,label}）。
+// manage=1 本身即管理通道：放行"停用类型"检查（管理停用类型的项），停用项仍由
+// withDisabled 控制。
 func (s *Service) ListItemsManage(ctx context.Context, typeCode, langQuery string, withDisabled bool) ([]ItemView, error) {
+	items, err := s.listItems(ctx, typeCode, langQuery, withDisabled, true)
+	if err != nil {
+		return nil, err
+	}
+	lang := resolveLang(langQuery)
+	out := make([]ItemView, 0, len(items))
+	for i := range items {
+		v := toItemView(&items[i])
+		v.Label = items[i].DisplayLabel(lang) // 管理列表按请求语言显示（缺译回退主表列）
+		v.Labels = nil                        // 列表不回 labels（docs §3：只有详情回，前端译文入口走 i18n texts 接口）
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// listItems 公共读取路径：类型定位 → 停用检查（manage/withDisabled 放行）→ 语言解析 → 列表。
+func (s *Service) listItems(ctx context.Context, typeCode, langQuery string, withDisabled, manage bool) ([]ddict.Item, error) {
 	t, err := s.loadTypeByCode(ctx, typeCode)
 	if err != nil {
 		return nil, err
 	}
-	lang := i18n.Default()
-	if l, ok := i18n.ParseLang(langQuery); ok {
-		lang = l
+	// 类型停用 → 连带项不下发（用户裁定 v1.4，docs §2）；withDisabled=1 / manage=1
+	// 是管理回显通道（编辑页取全量），放行类型停用检查与停用项下发。
+	if !withDisabled && !manage && t.Status != ddict.StatusOn {
+		return nil, ddict.ErrTypeDisabled
 	}
-	items, err := s.items.ListByType(ctx, t.ID, withDisabled, lang)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]ItemView, 0, len(items))
-	for i := range items {
-		item := toItemView(&items[i])
-		item.Label = items[i].DisplayLabel(lang)
-		out = append(out, item)
-	}
-	return out, nil
+	lang := resolveLang(langQuery)
+	return s.items.ListByType(ctx, t.ID, withDisabled, lang)
 }
 
 // ItemDetail 项详情（labels 全集，编辑页回填；docs §3——列表接口不回 labels，详情才回）。
@@ -521,7 +520,8 @@ func (s *Service) loadTypeByCode(ctx context.Context, typeCode string) (*ddict.T
 		return nil, err
 	}
 	if t == nil {
-		return nil, ddict.ErrBadParams
+		// 拼错/不存在的 typeCode（30046 带字段提示，docs 字典设计 §4）
+		return nil, &ddict.BadField{Field: "typeCode", Err: ddict.ErrBadParams}
 	}
 	return t, nil
 }
@@ -538,6 +538,14 @@ func (s *Service) loadItem(ctx context.Context, id int64) (*ddict.Item, error) {
 	return i, nil
 }
 
+// resolveLang ?lang= 解析（读宽容：未识别回退默认语言，不报错）。
+func resolveLang(langQuery string) i18n.Lang {
+	if l, ok := i18n.ParseLang(langQuery); ok {
+		return l
+	}
+	return i18n.Default()
+}
+
 // normalizeLabels 归一化 labels key（ParseLang：en_us → en-US），未注册 → 30035。
 // 与菜单 normalizeNames 同一规则（docs 字典设计 §11 验收 7：传 en_us 归一化后正常保存）。
 func normalizeLabels(labels map[string]string) (map[string]string, error) {
@@ -547,7 +555,7 @@ func normalizeLabels(labels map[string]string) (map[string]string, error) {
 	out := make(map[string]string, len(labels))
 	langs := i18n.Languages() // 上限校验：单次提交语言数 ≤ 已注册语言数
 	if len(labels) > len(langs) {
-		return nil, ddict.ErrBadParams
+		return nil, &ddict.BadField{Field: "labels", Err: ddict.ErrBadParams}
 	}
 	for k, v := range labels {
 		l, ok := i18n.ParseLang(k)
@@ -565,10 +573,10 @@ func normalizeLabels(labels map[string]string) (map[string]string, error) {
 func checkLabelDefaultLang(label string, labels map[string]string) error {
 	def := string(i18n.Default())
 	if v, ok := labels[def]; ok && strings.TrimSpace(v) != strings.TrimSpace(label) {
-		return ddict.ErrBadParams
+		return &ddict.BadField{Field: "labels." + def, Err: ddict.ErrBadParams}
 	}
 	if strings.TrimSpace(label) == "" {
-		return ddict.ErrBadParams
+		return &ddict.BadField{Field: "label", Err: ddict.ErrBadParams}
 	}
 	return nil
 }
