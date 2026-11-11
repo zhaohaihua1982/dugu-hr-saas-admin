@@ -69,15 +69,16 @@ type SysMenu struct {
 // TableName 表名。
 func (SysMenu) TableName() string { return "sys_menu" }
 
-// SysI18nText 统一翻译表 sys_i18n_text（数据文案唯一存储，docs 基础设施-i18n设计 §2；
-// 取代 sys_menu_i18n——菜单 name 现存于此：res_type='menu'、res_id=menu_id、field='name'）。
+// SysI18nText 统一翻译表 sys_i18n_text（数据文案唯一存储，docs 基础设施-i18n设计 §2）。
+// v1.5 合并粒度：一行 = 资源 × 字段，全部语言进 texts JSON（取代"一语言一行"）。
 type SysI18nText struct {
 	ID        int64     `gorm:"primaryKey;column:id"`
 	ResType   string    `gorm:"column:res_type"`
 	ResID     int64     `gorm:"column:res_id"`
 	Field     string    `gorm:"column:field"`
-	Lang      string    `gorm:"column:lang"`
-	Content   string    `gorm:"column:content"`
+	Texts     string    `gorm:"column:texts;type:json"` // {lang: 译文}；不含默认语言（§7.4）
+	LangMask  int64     `gorm:"column:lang_mask"`       // 位掩码：已录入语言（位分配 domain/i18n.LangBit，只许追加）
+	Complete  int8      `gorm:"column:complete"`        // 1=非默认语言的已注册语言全部录入（写入时重算）
 	DeletedAt int64     `gorm:"column:deleted_at"`
 	CreatedAt time.Time `gorm:"column:created_at"`
 	UpdatedAt time.Time `gorm:"column:updated_at"`

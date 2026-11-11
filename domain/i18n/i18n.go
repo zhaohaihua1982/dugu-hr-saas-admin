@@ -137,6 +137,11 @@ func ValidateTarget(r Resource, field, lang, content string) error {
 	if _, ok := pi18n.ParseLang(lang); !ok {
 		return ErrLangUnsupported
 	}
+	// 已注册但未分配掩码位的语言同样拒绝（§2.4）：lang_mask 无法表达它的录入状态，
+	// complete 会永远算成"缺失"。新增语言必须先在 bit.go langBits 追加位。
+	if _, ok := LangBit(pi18n.Lang(lang)); !ok {
+		return ErrLangUnsupported
+	}
 	if content == "" {
 		return nil
 	}
