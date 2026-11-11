@@ -129,13 +129,11 @@ func (s *Service) Meta(ctx context.Context, resType string) (*MetaView, error) {
 		Langs: langs, DefaultLang: string(i18n.Default()), LangBits: bits}, nil
 }
 
-// TextsList GET /i18n/texts（不传 resId）—— 译文总览分页（**DB 原样投影 v1.9**：
-// 用户裁定"直接读数据库，不要有任何加工"）——items = sys_i18n_text 行原样：
-// texts 是库里存储的 JSON 串（不解码、不补缺译键、不剔默认语言），lang_mask/
-// complete/deleted_at/时间原样；不透出 label/langs/defaultLang 等衍生信息
-// （meta 接口已承载）。仅保留分页（page/page_size/total）与 deleted_at=0
-// 范围过滤——那是查询范围，不是数据加工。id/res_id 字符串化是序列化层契约
-// （雪花 19 位超 JS Number 安全整数），不是数据加工。
+// TextsList GET /i18n/texts（不传 resId）—— 译文总览分页（**DB 原样投影 v1.9 + res_id 对应值 v1.11**）：
+// items = sys_i18n_text 行原样（texts 库内 JSON 串不解码不补键不剔语言，
+// lang_mask/complete/deleted_at/时间原样）+ 唯一的补强 `key` = res_id 对应的
+// 资源可读名（菜单 name / 字典项 value，来自 Resolver.Snapshot——用户裁定
+// "最多加上查询出 res_id 对应的值"）。分页 page/page_size/total 与仓库列表惯例一致。
 type TextsList struct {
 	Items    []TextsItem `json:"items"`
 	Total    int64       `json:"total"`
@@ -143,11 +141,12 @@ type TextsList struct {
 	PageSize int         `json:"page_size"`
 }
 
-// TextsItem 译文总览单行：DB 行原样。
+// TextsItem 译文总览单行：DB 行原样 + key。
 type TextsItem struct {
 	ID        int64  `json:"id"` // 行雪花ID
 	ResType   string `json:"res_type"`
 	ResID     string `json:"res_id"`
+	Key       string `json:"key"` // res_id 对应的资源可读名（唯一补强；主表 Snapshot）
 	Field     string `json:"field"`
 	Texts     string `json:"texts"`     // DB 原样 JSON 串
 	LangMask  int64  `json:"lang_mask"` // 原样数值（位含义见 meta.langBits）
@@ -172,7 +171,7 @@ func (s *Service) Texts(ctx context.Context, resType, field, resIDStr string, pa
 	return s.textsOf(ctx, r, spec, resIDStr)
 }
 
-// listTexts DB 原样投影分页（无解码/无补键/无语言过滤——COUNT+分页两条 SQL）。
+// listTexts DB 原样投影分页 + res_id 对应值（COUNT+分页两条 SQL + 每字段一枚 Snapshot）。
 func (s *Service) listTexts(ctx context.Context, r di18n.Resource, spec di18n.Spec, field string, page, pageSize int) (*TextsList, error) {
 	if field != "" && !di18n.HasField(r, field) {
 		return nil, di18n.ErrTargetUnregistered // 30038：field 必须在白名单内
@@ -181,10 +180,24 @@ func (s *Service) listTexts(ctx context.Context, r di18n.Resource, spec di18n.Sp
 	if err != nil {
 		return nil, err
 	}
+	// 唯一补强：key = res_id 对应的资源可读名。按 field 分组批量 Snapshot（禁循环单查）。
+	snaps := make(map[string]map[int64]di18n.ResItem, 2) // field → id → ResItem
+	byField := map[string][]int64{}
+	for _, row := range rows {
+		byField[row.Field] = append(byField[row.Field], row.ResID)
+	}
+	for f, ids := range byField {
+		snap, err := spec.Resolver.Snapshot(ctx, ids, f)
+		if err != nil {
+			return nil, err
+		}
+		snaps[f] = snap
+	}
 	items := make([]TextsItem, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, TextsItem{
 			ID: row.ID, ResType: row.ResType, ResID: strconv.FormatInt(row.ResID, 10),
+			Key:   snaps[row.Field][row.ResID].Key,
 			Field: row.Field, Texts: row.Texts, LangMask: row.LangMask,
 			Complete: row.Complete, DeletedAt: row.DeletedAt,
 			CreatedAt: row.CreatedAt.Format("2006-01-02 15:04:05.000"),
