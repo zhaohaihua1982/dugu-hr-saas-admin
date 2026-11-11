@@ -31,6 +31,9 @@ var PublicPaths = []string{
 	"/api/v1/admin/auth/sms/send",
 	"/api/v1/admin/auth/login/password",
 	"/api/v1/admin/auth/login/sms",
+	// 登录配置读取端匿名开放（docs 登录配置设计 §2.1）：登录页未登录时就要按
+	// login_mask 动态渲染可用的登录 tab。只读投影；写接口（PUT/reset）仍要求登录态。
+	"/api/v1/admin/login-configs-admin",
 }
 
 // NewRouter 装配路由：全局 AuthGuard（未登录统一过滤，白名单放行）。
