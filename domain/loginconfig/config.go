@@ -117,9 +117,10 @@ const (
 func Defaults(t ConfigType) *Config {
 	switch t {
 	case TypeAdmin:
-		// 管理后台：最严。不开手机短信（mask=3 非 7，防枚举 §3.2）；并发会话=1。
+		// 管理后台：账号/密码 + 手机/短信（v1.6 用户裁定 mask=5；手机+密码 bit1 默认
+		// 关闭，短信登录为主通道）。并发会话=1；密码策略高档。
 		// v1.1：RefreshTokenTTL 604800→86400（规则 4 自洽修正，用户裁定）。
-		return &Config{ConfigType: TypeAdmin, ScopeID: 0, LoginMask: 3,
+		return &Config{ConfigType: TypeAdmin, ScopeID: 0, LoginMask: 5,
 			FailThreshold: 5, LockMinutes: 15, UnlockMode: UnlockBoth,
 			CaptchaAfterFails: 3, IPFailLimit: 50, IPRateLimit: 20,
 			AccessTokenTTL: 7200, RefreshTokenTTL: 86400, SessionHardTTL: 86400,
