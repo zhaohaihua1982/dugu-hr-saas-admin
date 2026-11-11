@@ -58,6 +58,17 @@ func (p *LoginConfigAPI) GetAdmin(ctx *gin.Context) {
 	ctl.RespSuccess(ctx, v)
 }
 
+// GetTenant GET /admin/login-configs-tenant —— 租户登录配置（写死 config_type=2；
+// v1.7 用户裁定重新加回，与 -admin 同形状同权限——需登录态）。
+func (p *LoginConfigAPI) GetTenant(ctx *gin.Context) {
+	v, err := p.svc.TenantSettings(ctx.Request.Context())
+	if err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	ctl.RespSuccess(ctx, v)
+}
+
 // Update PUT /admin/login-configs/:type —— 全量更新（body 带 version 乐观锁）。
 // 成功返回新版本号；缓存立即失效（§5 约定 3）。
 func (p *LoginConfigAPI) Update(ctx *gin.Context) {

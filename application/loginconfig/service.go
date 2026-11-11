@@ -1,6 +1,6 @@
 // Package loginconfig —— 登录配置管理用例（docs/系统管理-登录配置设计.md §5/§6）。
-// 读取端（v1.2/v1.3 用户裁定）：GET /login-configs-admin 写死管理后台配置、按前端
-// 所需字段投影；**不设租户读取端**（管理后台不拉租户数据，租户侧接口随租户模块另定）。
+// 读取端（v1.5~v1.7 用户裁定）：GET /login-options 匿名（仅 login_mask）；
+// GET /login-configs-admin 与 /login-configs-tenant 需登录态、按前端所需字段投影。
 // 写入端：PUT 全量更新（乐观锁 + §6 校验 + 缓存失效 + 审计 diff）、POST reset。
 // 管线侧消费走 domain/loginconfig.Provider，不经本包。
 package loginconfig
@@ -124,8 +124,7 @@ func NewService(repo dloginconfig.Repository, provider dloginconfig.Provider, id
 
 // AdminSettings 管理后台配置投影（写死 config_type=1）。
 // 行缺失（seed 漏跑）→ 按 §3.2 代码兜底默认值投影（与管线同一份常量）。
-// v1.3 用户裁定：不设租户读取端——管理后台不拉租户数据；租户配置的读取随
-// 租户登录模块在 /api/v1/tenant/* 体系自行定义，管理端仅保留 PUT/reset（:type=2）。
+// v1.7 用户裁定：恢复租户读取端（v1.3 曾撤销）——两类型读取对称，均需登录态。
 func (s *Service) AdminSettings(ctx context.Context) (*SettingView, error) {
 	cfg, err := s.repo.ByType(ctx, dloginconfig.TypeAdmin)
 	if err != nil {
@@ -133,6 +132,19 @@ func (s *Service) AdminSettings(ctx context.Context) (*SettingView, error) {
 	}
 	if cfg == nil {
 		return project(dloginconfig.Defaults(dloginconfig.TypeAdmin)), nil
+	}
+	return project(cfg), nil
+}
+
+// TenantSettings 租户登录配置投影（写死 config_type=2；v1.7 用户裁定重新加回，
+// 与 -admin 同形状同权限——均需登录态）。行缺失按 §3.2 兜底默认值投影。
+func (s *Service) TenantSettings(ctx context.Context) (*SettingView, error) {
+	cfg, err := s.repo.ByType(ctx, dloginconfig.TypeTenant)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return project(dloginconfig.Defaults(dloginconfig.TypeTenant)), nil
 	}
 	return project(cfg), nil
 }

@@ -146,8 +146,9 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		// system:login-config:write 待权限模块落地后挂载——当前与字典同策略）。
 		// v1.2 用户裁定：读取端按端固定投影——-admin 写死管理后台配置（按前端所需
 		// 字段投影），-tenant 预留留空；写入端仍按 :type（PUT 全量 / POST reset）。
-		admin.GET("login-options", loginCfgAPI.LoginOptions)   // 登录页匿名读取（白名单）
-		admin.GET("login-configs-admin", loginCfgAPI.GetAdmin) // 需登录态（v1.5）
+		admin.GET("login-options", loginCfgAPI.LoginOptions)     // 登录页匿名读取（白名单）
+		admin.GET("login-configs-admin", loginCfgAPI.GetAdmin)   // 需登录态
+		admin.GET("login-configs-tenant", loginCfgAPI.GetTenant) // 需登录态（v1.7 重新加回）
 		admin.PUT("login-configs/:type", loginCfgAPI.Update)
 		admin.POST("login-configs/:type/reset", loginCfgAPI.Reset)
 	}
