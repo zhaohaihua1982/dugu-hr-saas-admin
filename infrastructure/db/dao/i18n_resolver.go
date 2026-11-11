@@ -5,8 +5,6 @@ package dao
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 
 	di18n "dugu-hr-saas-admin/domain/i18n"
 	"dugu-hr-saas-admin/infrastructure/db"
@@ -78,28 +76,4 @@ func RegisterI18nResolvers(d *db.DB) {
 		Resolver: menuI18nResolver{d: d},
 	})
 	// di18n.Register(di18n.ResDictItem, di18n.Spec{...}) // 字典模块落地后取消注释
-}
-
-// SweepOrphanI18nRows 启动期孤儿译文清扫（docs 基础设施-i18n设计 §1.3 对策行：
-// "孤儿译文由月度清理任务兜底"——提前为每次启动幂等执行）。
-// 孤儿 = 活译文行指向已删除/不存在的资源。resources 表登记 (res_type → 主表)，
-// 新资源落地时在此追加一行；未登记的资源类型不扫（避免误伤）。
-func SweepOrphanI18nRows(ctx context.Context, d *db.DB) (int64, error) {
-	var total int64
-	for res, table := range map[di18n.Resource]string{
-		di18n.ResMenu: "sys_menu", // dict_item 随字典模块落地时追加
-	} {
-		q := d.WithContext(ctx).Exec(
-			"UPDATE sys_i18n_text t SET t.deleted_at = UNIX_TIMESTAMP(NOW(3))*1000 "+
-				"WHERE t.res_type = ? AND t.deleted_at = 0 AND NOT EXISTS "+
-				"(SELECT 1 FROM `"+table+"` m WHERE m.id = t.res_id AND m.deleted_at = 0)", res)
-		total += q.RowsAffected
-		if q.Error != nil {
-			return total, fmt.Errorf("孤儿译文清扫 %s: %w", res, q.Error)
-		}
-		if q.RowsAffected > 0 {
-			slog.Info("孤儿译文清扫完成", "res_type", res, "swept", q.RowsAffected)
-		}
-	}
-	return total, nil
 }
