@@ -56,16 +56,15 @@ func (p *I18nAPI) Meta(ctx *gin.Context) {
 	i18nResp(ctx, view, err)
 }
 
-// Texts GET /admin/i18n/texts —— 查译文（resId 可选，docs §7.5 v1.4/v1.6）：
+// Texts GET /admin/i18n/texts —— 查译文（resId 可选，docs §7.5 v1.4/v1.6/v1.7）：
 //   - resType + resId → 单资源全部译文（详情/表单回填，原语义）；
-//   - resType[&field=&afterId=&afterField=&limit=] → 翻译表行直读列表（非聚合，
-//     复合游标 (afterId, afterField) 防多字段行跨页截断）。
+//   - resType[&field=&page=&page_size=] → 翻译表行直读列表（非聚合；
+//     正常分页 page/page_size，回 total；与 sys-users 列表同一惯例）。
 func (p *I18nAPI) Texts(ctx *gin.Context) {
-	afterID, _ := strconv.ParseInt(ctx.Query("afterId"), 10, 64)
-	limit, _ := strconv.Atoi(ctx.Query("limit"))
+	page, _ := strconv.Atoi(ctx.Query("page"))
+	pageSize, _ := strconv.Atoi(ctx.Query("page_size"))
 	view, err := p.i18n.Texts(ctx.Request.Context(),
-		ctx.Query("resType"), ctx.Query("field"), ctx.Query("resId"),
-		afterID, ctx.Query("afterField"), limit)
+		ctx.Query("resType"), ctx.Query("field"), ctx.Query("resId"), page, pageSize)
 	i18nResp(ctx, view, err)
 }
 

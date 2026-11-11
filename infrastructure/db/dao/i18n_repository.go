@@ -117,34 +117,31 @@ func (r *I18nRepository) Save(ctx context.Context, res di18n.Resource, id int64,
 	})
 }
 
-// ListRows 译文总览分页（非聚合，v1.6）：直接读 sys_i18n_text 合并粒度行。
-// 游标：field 指定 → 纯 res_id；field 空（全字段）→ 复合游标 (res_id, field)，
-// 防止同 res_id 的多字段行跨页截断。排序恒 (res_id, field)——输出顺序确定。
-func (r *I18nRepository) ListRows(ctx context.Context, res di18n.Resource, field string, afterID int64, afterField string, limit int) ([]di18n.Row, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	q := r.d.WithContext(ctx).
-		Select("res_id", "field", "texts", "lang_mask", "complete").
+// ListRows 译文总览分页（非聚合 + 正常分页，v1.7）：直接读 sys_i18n_text 合并粒度行。
+// COUNT（total）+ Limit/Offset 两阶段，与 sys-users 列表同一 normalizePage 惯例
+// （page≤0→1、size≤0→10、size>100→100）。排序恒 (res_id, field) 升序——输出确定；
+// 页边界可能截断同资源多字段行，属常规列表语义（page/page_size 的固有行为）。
+func (r *I18nRepository) ListRows(ctx context.Context, res di18n.Resource, field string, page, pageSize int) ([]di18n.Row, int64, error) {
+	page, size := normalizePage(page, pageSize)
+	base := r.d.WithContext(ctx).
 		Where("res_type = ? AND deleted_at = 0", res)
 	if field != "" {
-		q = q.Where("field = ?", field)
+		base = base.Where("field = ?", field)
 	}
-	if afterID > 0 {
-		if field != "" || afterField == "" {
-			q = q.Where("res_id > ?", afterID)
-		} else {
-			q = q.Where("(res_id > ? OR (res_id = ? AND field > ?))", afterID, afterID, afterField)
-		}
+	var total int64
+	if err := base.Session(&gorm.Session{}).Model(&po.SysI18nText{}).Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("i18n.list_rows.count: %w", err)
 	}
+	q := base.
+		Select("res_id", "field", "texts", "lang_mask", "complete")
 	if field != "" {
 		q = q.Order("res_id ASC")
 	} else {
 		q = q.Order("res_id ASC, field ASC")
 	}
 	var rows []po.SysI18nText
-	if err := q.Limit(limit).Find(&rows).Error; err != nil {
-		return nil, fmt.Errorf("i18n.list_rows: %w", err)
+	if err := q.Limit(size).Offset((page - 1) * size).Find(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("i18n.list_rows.find: %w", err)
 	}
 	out := make([]di18n.Row, 0, len(rows))
 	for _, row := range rows {
@@ -153,7 +150,7 @@ func (r *I18nRepository) ListRows(ctx context.Context, res di18n.Resource, field
 			LangMask: row.LangMask, Complete: row.Complete == 1,
 		})
 	}
-	return out, nil
+	return out, total, nil
 }
 
 // DeleteAll 软删该资源全部译文行（合并粒度下墓碑 = 资源 × 字段整行；

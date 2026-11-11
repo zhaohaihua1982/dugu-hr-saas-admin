@@ -177,11 +177,12 @@ type Repo interface {
 	// Save 只覆盖传入语言。texts 结构：field → lang → 译文（空串 = 删除该语言）。
 	Save(ctx context.Context, r Resource, id int64, texts map[string]map[Lang]string) error
 
-	// ListRows 译文总览分页（**非聚合**，v1.6 用户裁定）：直接投影 sys_i18n_text
-	// 合并粒度行，不做主表 join（key/source 由前端按 resId 向资源接口另取）。
-	// field 空 = 白名单全字段（行按 res_id,field 排序，游标复合 (afterID, afterField)）；
-	// field 指定 = 纯 res_id 游标。与 Get/GetMany 的"批量"不同，本方法只服务分页场景。
-	ListRows(ctx context.Context, r Resource, field string, afterID int64, afterField string, limit int) ([]Row, error)
+	// ListRows 译文总览分页（**非聚合 + 正常分页**，v1.6/v1.7 用户裁定）：直接投影
+	// sys_i18n_text 合并粒度行，不做主表 join（key/source 由前端按 resId 向资源接口
+	// 另取）。page/page_size 为常规页码分页（page≤0→1、size≤0→10、size>100→100，
+	// 与 sys-users 列表同一 normalizePage 惯例）；返回 total 供前端翻页器。
+	// field 空 = 白名单全字段（行按 res_id,field 排序）；field 指定 = 按 res_id 排序。
+	ListRows(ctx context.Context, r Resource, field string, page, pageSize int) (rows []Row, total int64, err error)
 
 	// BatchDelete 批量软删（§7.7 三档第 2 档）：**单事务全成功或全失败**，
 	// 返回实际推进的行数；删不存在的译文幂等成功、计 0。

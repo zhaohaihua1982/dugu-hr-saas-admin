@@ -125,15 +125,19 @@ func (s *Service) Meta(ctx context.Context, resType string) (*MetaView, error) {
 }
 
 // TextsList GET /i18n/texts（不传 resId）—— 译文总览分页（**直接读 sys_i18n_text 行，
-// 非聚合 v1.6**）：items = 翻译表行的直接投影，不再 join 主表取 key/source
-// （前端按 resId 向资源接口另取可读名）。游标翻页无 total；缺译 = 空串非缺键；
+// 非聚合 v1.6 + 正常分页 v1.7**）：items = 翻译表行的直接投影，不再 join 主表取
+// key/source（前端按 resId 向资源接口另取可读名）。page/page_size/total 与
+// sys-users 列表同一形状（snake_case 沿用仓库惯例）；缺译 = 空串非缺键；
 // texts 无默认语言键（§7.4，存储本身排除）。
 type TextsList struct {
+	Items       []TextsItem `json:"items"`
+	Total       int64       `json:"total"`
+	Page        int         `json:"page"`
+	PageSize    int         `json:"page_size"`
 	ResType     string      `json:"resType"`
 	Label       string      `json:"label"`
 	DefaultLang string      `json:"defaultLang"`
 	Langs       []string    `json:"langs"` // 非默认语言的已注册语言全量（texts 的键域）
-	Items       []TextsItem `json:"items"` // 按 (resId, field) 升序；= 翻译表行原样
 }
 
 // TextsItem 译文总览单行：翻译表一行的直接投影。
@@ -147,25 +151,25 @@ type TextsItem struct {
 
 // Texts 查（resId 二选一，§7.5 v1.4 起 resId 非必填）：
 //   - resId 有值 → 单资源全部译文（详情/表单回填，原语义）；
-//   - resId 为空 → 资源类型维度**行列表**（直接读表非聚合 v1.6：field 可选过滤、
-//     afterId/afterField/limit 游标，≤100 默认 50；整页一条 SQL）。
-func (s *Service) Texts(ctx context.Context, resType, field, resIDStr string, afterID int64, afterField string, limit int) (interface{}, error) {
+//   - resId 为空 → 资源类型维度**行列表**（直接读表非聚合 v1.6；正常分页 v1.7：
+//     page/page_size，page≤0→1、size≤0→10、>100→100，COUNT+Limit/Offset）。
+func (s *Service) Texts(ctx context.Context, resType, field, resIDStr string, page, pageSize int) (interface{}, error) {
 	r, spec, err := specOf(resType)
 	if err != nil {
 		return nil, err
 	}
 	if resIDStr == "" {
-		return s.listTexts(ctx, r, spec, field, afterID, afterField, limit)
+		return s.listTexts(ctx, r, spec, field, page, pageSize)
 	}
 	return s.textsOf(ctx, r, spec, resIDStr)
 }
 
-// listTexts 直读行分页（非聚合：无主表 join、无 Snapshot——单条 ListRows SQL 完成整页）。
-func (s *Service) listTexts(ctx context.Context, r di18n.Resource, spec di18n.Spec, field string, afterID int64, afterField string, limit int) (*TextsList, error) {
+// listTexts 直读行分页（非聚合：无主表 join、无 Snapshot——COUNT+分页两条 SQL）。
+func (s *Service) listTexts(ctx context.Context, r di18n.Resource, spec di18n.Spec, field string, page, pageSize int) (*TextsList, error) {
 	if field != "" && !di18n.HasField(r, field) {
 		return nil, di18n.ErrTargetUnregistered // 30038：field 必须在白名单内
 	}
-	rows, err := s.t.ListRows(ctx, r, field, afterID, afterField, limit)
+	rows, total, err := s.t.ListRows(ctx, r, field, page, pageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -188,8 +192,26 @@ func (s *Service) listTexts(ctx context.Context, r di18n.Resource, spec di18n.Sp
 			Texts: texts, LangMask: row.LangMask, Complete: row.Complete,
 		})
 	}
-	return &TextsList{ResType: string(r), Label: spec.Label, DefaultLang: string(def),
-		Langs: outLangs, Items: items}, nil
+	page, size := normalizePageLocal(page, pageSize)
+	return &TextsList{
+		Items: items, Total: total, Page: page, PageSize: size,
+		ResType: string(r), Label: spec.Label, DefaultLang: string(def), Langs: outLangs,
+	}, nil
+}
+
+// normalizePageLocal 与 dao.normalizePage 同一规则（page≤0→1、size≤0→10、>100→100）；
+// application 层需要 normalize 后的值回显 page/page_size。
+func normalizePageLocal(page, size int) (int, int) {
+	if page <= 0 {
+		page = 1
+	}
+	if size <= 0 {
+		size = 10
+	}
+	if size > 100 {
+		size = 100
+	}
+	return page, size
 }
 
 // textsOf 单资源详情（原语义）。SQL ≤3 条：Exists + Snapshot（每字段 1 条）+ GetMany。
@@ -286,7 +308,7 @@ func (s *Service) PutTexts(ctx context.Context, req *PutTextsReq, opUID int64, p
 	}
 	audit("i18n.text.save", opUID, p, map[string]interface{}{
 		"res_type": req.ResType, "res_id": req.ResID, "keys": touched})
-	return s.Texts(ctx, req.ResType, "", req.ResID, 0, "", 0) // 保存后回传全量视图（详情模式）
+	return s.Texts(ctx, req.ResType, "", req.ResID, 0, 0) // 保存后回传全量视图（详情模式）
 }
 
 // DeleteText 删：单条（三档第 1 档，§7.7）——幂等，删不存在 = 成功无行推进。
