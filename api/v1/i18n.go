@@ -100,10 +100,12 @@ func (p *I18nAPI) BatchDelete(ctx *gin.Context) {
 	i18nResp(ctx, out, err)
 }
 
-// Pending GET /admin/i18n/pending?resType=&lang=&afterId=&limit= —— 缺译清单（游标，无 total）。
+// Pending GET /admin/i18n/pending?resType=&lang=&field=&page=&page_size= ——
+// 缺译清单（v1.12 与 /texts 同构：page/page_size/total + TextsItem 行形状）。
 func (p *I18nAPI) Pending(ctx *gin.Context) {
-	afterID, _ := strconv.ParseInt(ctx.Query("afterId"), 10, 64)
-	limit, _ := strconv.Atoi(ctx.Query("limit"))
-	view, err := p.i18n.Pending(ctx.Request.Context(), ctx.Query("resType"), ctx.Query("lang"), afterID, limit)
+	page, _ := strconv.Atoi(ctx.Query("page"))
+	pageSize, _ := strconv.Atoi(ctx.Query("page_size"))
+	view, err := p.i18n.Pending(ctx.Request.Context(),
+		ctx.Query("resType"), ctx.Query("lang"), ctx.Query("field"), page, pageSize)
 	i18nResp(ctx, view, err)
 }

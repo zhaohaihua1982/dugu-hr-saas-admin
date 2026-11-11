@@ -48,15 +48,23 @@ func (m menuI18nResolver) Snapshot(ctx context.Context, ids []int64, field strin
 	return out, nil
 }
 
-func (m menuI18nResolver) ListIDs(ctx context.Context, afterID int64, limit int) ([]int64, error) {
+func (m menuI18nResolver) ListIDs(ctx context.Context, offset, limit int) ([]int64, error) {
 	var ids []int64
 	err := m.d.WithContext(ctx).Model(&po.SysMenu{}).
-		Where("deleted_at = 0 AND id > ?", afterID).
-		Order("id ASC").Limit(limit).Pluck("id", &ids).Error
+		Where("deleted_at = 0").
+		Order("id ASC").Offset(offset).Limit(limit).Pluck("id", &ids).Error
 	if err != nil {
 		return nil, err
 	}
 	return ids, nil
+}
+
+// CountLive 活资源总数（v1.12 pending total 用）。
+func (m menuI18nResolver) CountLive(ctx context.Context) (int64, error) {
+	var cnt int64
+	err := m.d.WithContext(ctx).Model(&po.SysMenu{}).
+		Where("deleted_at = 0").Count(&cnt).Error
+	return cnt, err
 }
 
 func (menuI18nResolver) PermWrite() string { return "menu:update" } // 声明并预留（§7.8）

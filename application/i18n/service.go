@@ -8,6 +8,7 @@ package i18n
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	"dugu-hr-saas-admin/application/types"
 	di18n "dugu-hr-saas-admin/domain/i18n"
@@ -68,20 +69,14 @@ type DelKeyReq struct {
 	Lang    string `json:"lang"`
 }
 
-// PendingView GET /i18n/pending —— 缺译清单（游标翻页，无 total，§7.6）。
+// PendingView GET /i18n/pending —— 缺译清单（v1.12：与 /texts 完全同构的返回格式，
+// 同为 TextsItem 行形状 + 分页三件套；区别只在过滤条件 = 该语言未录入的行/资源）。
+// 无任何译文的资源没有行 → 补零值行（texts="{}"、mask/complete=0、id=0、时间空串）。
 type PendingView struct {
-	ResType string        `json:"resType"`
-	Lang    string        `json:"lang"`
-	Items   []PendingItem `json:"items"`
-}
-
-// PendingItem 缺译条目：source = 默认语言原文（待翻内容），content 恒空串。
-type PendingItem struct {
-	ResID   string `json:"resId"`
-	Key     string `json:"key"` // 资源可读标识（菜单 name / 字典项 value）
-	Field   string `json:"field"`
-	Source  string `json:"source"`
-	Content string `json:"content"`
+	Items    []TextsItem `json:"items"`
+	Total    int64       `json:"total"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"page_size"`
 }
 
 // ---------- 用例 ----------
@@ -391,9 +386,12 @@ func (s *Service) DeleteBatch(ctx context.Context, req *BatchDeleteReq, opUID in
 	return map[string]interface{}{"deleted": deleted}, nil
 }
 
-// Pending 缺译清单（§7.6，运营/翻译视角）：三次查询 + 两集合相减。
-// 游标分页（afterId）无 total；不做关键词搜索（status 只留 missing）。
-func (s *Service) Pending(ctx context.Context, resType, lang string, afterID int64, limit int) (*PendingView, error) {
+// Pending 缺译清单（运营/翻译视角；v1.12 与 /texts 同构：page/page_size/total +
+// TextsItem 行形状，全部单表查询零 JOIN）。
+//   - total = Σ_field (CountLive - CountWithLang)：活资源数 - 已录该语言的行数；
+//   - 页内 items：该页主表 id → GetRows（原始行）→ 该语言不在 texts 里的行原样透出，
+//     无行的资源补零值行；key 来自 Snapshot（与 texts 列表同源）。
+func (s *Service) Pending(ctx context.Context, resType, lang, field string, page, pageSize int) (*PendingView, error) {
 	r, spec, err := specOf(resType)
 	if err != nil {
 		return nil, err
@@ -405,37 +403,86 @@ func (s *Service) Pending(ctx context.Context, resType, lang string, afterID int
 	if l == i18n.Default() {
 		return nil, di18n.ErrDefaultLang // 默认语言恒有主表值，无"缺译"概念
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-	ids, err := spec.Resolver.ListIDs(ctx, afterID, limit)
-	if err != nil {
-		return nil, err
+	if field != "" && !di18n.HasField(r, field) {
+		return nil, di18n.ErrTargetUnregistered
 	}
 	fields := di18n.Fields(r)
-	have, err := s.t.GetMany(ctx, r, ids, fields, []di18n.Lang{l})
-	if err != nil {
-		return nil, err
+	if field != "" {
+		fields = []string{field}
 	}
-	items := make([]PendingItem, 0, len(ids))
-	for _, field := range fields {
-		snap, err := spec.Resolver.Snapshot(ctx, ids, field)
-		if err != nil {
-			return nil, err
+	page, size := normalizePageLocal(page, pageSize)
+	// 先生成完整缺译结果集，再分页，避免主表分页后过滤造成漏项。
+	var allIDs []int64
+	for offset := 0; ; offset += 500 {
+		ids, listErr := spec.Resolver.ListIDs(ctx, offset, 500)
+		if listErr != nil {
+			return nil, listErr
 		}
-		for _, id := range ids { // 保持游标顺序（单调递增）
-			if _, ok := have[id][field][l]; ok {
-				continue // 已有译文
-			}
-			item := snap[id] // 未命中 id Snapshot 不返回（理论不存在：ids 刚来自 ListIDs）
-			if item.ID == 0 {
-				continue
-			}
-			items = append(items, PendingItem{
-				ResID: strconv.FormatInt(id, 10), Key: item.Key, Field: field,
-				Source: item.Value, Content: "",
-			})
+		allIDs = append(allIDs, ids...)
+		if len(ids) < 500 {
+			break
 		}
 	}
-	return &PendingView{ResType: string(r), Lang: string(l), Items: items}, nil
+	allItems := make([]TextsItem, 0)
+	for start := 0; start < len(allIDs); start += 500 {
+		end := start + 500
+		if end > len(allIDs) {
+			end = len(allIDs)
+		}
+		ids := allIDs[start:end]
+		rawRows, getErr := s.t.GetRows(ctx, r, ids)
+		if getErr != nil {
+			return nil, getErr
+		}
+		rowsByID := make(map[int64]di18n.Row, len(rawRows))
+		for _, row := range rawRows {
+			rowsByID[row.ResID] = row
+		}
+		for _, f := range fields {
+			snap, snapErr := spec.Resolver.Snapshot(ctx, ids, f)
+			if snapErr != nil {
+				return nil, snapErr
+			}
+			for _, id := range ids {
+				resItem := snap[id]
+				if resItem.ID == 0 {
+					continue
+				}
+				row, hasRow := rowsByID[id]
+				if hasRow {
+					if v, ok := di18n.DecodeTextsPublic(row.Texts)[l]; ok && strings.TrimSpace(v) != "" {
+						continue
+					}
+				}
+				allItems = append(allItems, pendingItem(r, id, resItem, f, row, hasRow))
+			}
+		}
+	}
+	total := int64(len(allItems))
+	start := (page - 1) * size
+	if start > len(allItems) {
+		start = len(allItems)
+	}
+	end := start + size
+	if end > len(allItems) {
+		end = len(allItems)
+	}
+	return &PendingView{Items: allItems[start:end], Total: total, Page: page, PageSize: size}, nil
+}
+
+// pendingItem 组装单条：有行 → 行原样 + key；无行（零译文资源）→ 零值行。
+func pendingItem(r di18n.Resource, id int64, resItem di18n.ResItem, field string, row di18n.Row, hasRow bool) TextsItem {
+	if !hasRow {
+		return TextsItem{
+			ID: 0, ResType: string(r), ResID: strconv.FormatInt(id, 10), Key: resItem.Key,
+			Field: field, Texts: "{}", LangMask: 0, Complete: 0, DeletedAt: 0,
+		}
+	}
+	return TextsItem{
+		ID: row.ID, ResType: row.ResType, ResID: strconv.FormatInt(row.ResID, 10),
+		Key: resItem.Key, Field: row.Field, Texts: row.Texts,
+		LangMask: row.LangMask, Complete: row.Complete, DeletedAt: row.DeletedAt,
+		CreatedAt: row.CreatedAt.Format("2006-01-02 15:04:05.000"),
+		UpdatedAt: row.UpdatedAt.Format("2006-01-02 15:04:05.000"),
+	}
 }

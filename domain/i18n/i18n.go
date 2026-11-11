@@ -47,8 +47,11 @@ type Resolver interface {
 	Exists(ctx context.Context, id int64) (bool, error)
 	// Snapshot 批量取 id → ResItem：一次 IN 查询，禁止循环（§5 N+1 红线）。
 	Snapshot(ctx context.Context, ids []int64, field string) (map[int64]ResItem, error)
-	// ListIDs 游标翻页取主表 id（afterID 递增），供缺译清单使用；只取 id。
-	ListIDs(ctx context.Context, afterID int64, limit int) ([]int64, error)
+	// ListIDs 常规分页取主表 id（offset 页码语义，v1.12 与 /texts 同构）。
+	// 只取 id，不取业务字段——通用层不该知道业务的筛选/排序规则。
+	ListIDs(ctx context.Context, offset, limit int) ([]int64, error)
+	// CountLive 该资源类型活资源总数（分页 total 估算用；v1.12）。
+	CountLive(ctx context.Context) (int64, error)
 	// PermWrite 该资源的写权限码（如 "menu:update"，docs §7.8）。
 	// 现状仅声明：按钮级鉴权中间件未上线前接口仍只要求登录态。
 	PermWrite() string
@@ -188,6 +191,14 @@ type Repo interface {
 	// BatchDelete 批量软删（§7.7 三档第 2 档）：**单事务全成功或全失败**，
 	// 返回实际推进的行数；删不存在的译文幂等成功、计 0。
 	BatchDelete(ctx context.Context, keys []DelKey) (int64, error)
+
+	// GetRows 批量取原始行（v1.12 pending 用：缺译清单对"已有部分译文"的行
+	// 原样透出 texts JSON 串）。命不中的 id 不出现在结果里。
+	GetRows(ctx context.Context, r Resource, ids []int64) ([]Row, error)
+
+	// CountWithLang 已录入某语言的活行数（pending total 用：
+	// 缺译总数 = CountLive - CountWithLang，孤儿行按已译计的轻微误差可接受）。
+	CountWithLang(ctx context.Context, r Resource, field string, lang Lang) (int64, error)
 
 	// DeleteAll 软删该资源全部译文（资源删除场景必须走同事务的内部信道）。
 	DeleteAll(ctx context.Context, r Resource, id int64) error

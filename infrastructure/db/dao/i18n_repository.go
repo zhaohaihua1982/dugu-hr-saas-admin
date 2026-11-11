@@ -154,6 +154,44 @@ func (r *I18nRepository) ListRows(ctx context.Context, res di18n.Resource, field
 	return out, total, nil
 }
 
+// GetRows 批量取原始行（v1.12 pending：缺译清单对已有部分译文的行原样透出）。
+func (r *I18nRepository) GetRows(ctx context.Context, res di18n.Resource, ids []int64) ([]di18n.Row, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var rows []po.SysI18nText
+	err := r.d.WithContext(ctx).
+		Where("res_type = ? AND deleted_at = 0 AND res_id IN ?", res, ids).
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("i18n.get_rows: %w", err)
+	}
+	out := make([]di18n.Row, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, di18n.Row{
+			ID: row.ID, ResType: row.ResType, ResID: row.ResID, Field: row.Field,
+			Texts: row.Texts, LangMask: row.LangMask, Complete: row.Complete,
+			DeletedAt: row.DeletedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+// CountWithLang 已录入某语言的活行数（v1.12 pending total 用）。
+// JSON 路径 $.  "en-US"  由 Go 侧拼好作为参数绑定（避免 SQL 内多层引号拼接出错）。
+func (r *I18nRepository) CountWithLang(ctx context.Context, res di18n.Resource, field string, lang di18n.Lang) (int64, error) {
+	var cnt int64
+	path := `$.` + `"` + string(lang) + `"`
+	err := r.d.WithContext(ctx).Model(&po.SysI18nText{}).
+		Where("res_type = ? AND field = ? AND deleted_at = 0 AND JSON_CONTAINS_PATH(texts, 'one', ?)",
+			res, field, path).
+		Count(&cnt).Error
+	if err != nil {
+		return 0, fmt.Errorf("i18n.count_with_lang: %w", err)
+	}
+	return cnt, nil
+}
+
 // DeleteAll 软删该资源全部译文行（合并粒度下墓碑 = 资源 × 字段整行；
 // 资源删除场景请走同事务的 deleteAllTx，本方法供"单独清理"使用）。
 func (r *I18nRepository) DeleteAll(ctx context.Context, res di18n.Resource, id int64) error {

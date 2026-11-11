@@ -8,6 +8,7 @@ package i18n
 
 import (
 	pi18n "dugu-hr-saas-admin/pkg/i18n"
+	"encoding/json"
 )
 
 // langBits 语言 → 掩码位。**固定分配、只许追加、严禁重排**：位序一旦落库即成事实，
@@ -52,4 +53,15 @@ func Bits() map[Lang]int64 {
 		out[l] = b
 	}
 	return out
+}
+
+// DecodeTextsPublic texts JSON 串 → {lang: 译文}（应用层判缺译用；
+// 与 dao 的解码同规则：空串/坏 JSON 按空对象）。
+func DecodeTextsPublic(raw string) map[Lang]string {
+	m := make(map[Lang]string, 4)
+	if raw == "" {
+		return m
+	}
+	_ = json.Unmarshal([]byte(raw), &m)
+	return m
 }
