@@ -144,7 +144,6 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		// v1.2 用户裁定：读取端按端固定投影——-admin 写死管理后台配置（按前端所需
 		// 字段投影），-tenant 预留留空；写入端仍按 :type（PUT 全量 / POST reset）。
 		admin.GET("login-configs-admin", loginCfgAPI.GetAdmin)
-		admin.GET("login-configs-tenant", loginCfgAPI.GetTenant)
 		admin.PUT("login-configs/:type", loginCfgAPI.Update)
 		admin.POST("login-configs/:type/reset", loginCfgAPI.Reset)
 	}

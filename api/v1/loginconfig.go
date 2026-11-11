@@ -34,19 +34,10 @@ func parseConfigType(ctx *gin.Context) (dloginconfig.ConfigType, error) {
 
 // GetAdmin GET /admin/login-configs-admin —— 管理后台登录配置（写死 config_type=1）。
 // 投影：前端编辑页绑定字段 + version（docs 登录配置设计 §11.2-④）。
+// v1.3 用户裁定：不设租户读取端——管理后台不拉租户数据；租户配置随租户登录
+// 模块（/api/v1/tenant/* 体系）落地时再在彼侧定义接口。
 func (p *LoginConfigAPI) GetAdmin(ctx *gin.Context) {
 	v, err := p.svc.AdminSettings(ctx.Request.Context())
-	if err != nil {
-		ErrorResponse(ctx, err)
-		return
-	}
-	ctl.RespSuccess(ctx, v)
-}
-
-// GetTenant GET /admin/login-configs-tenant —— 租户登录配置（预留，先留空 data:null；
-// 租户登录模块落地后返回同形状投影）。
-func (p *LoginConfigAPI) GetTenant(ctx *gin.Context) {
-	v, err := p.svc.TenantSettings(ctx.Request.Context())
 	if err != nil {
 		ErrorResponse(ctx, err)
 		return
