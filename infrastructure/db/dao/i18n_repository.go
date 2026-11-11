@@ -154,17 +154,32 @@ func (r *I18nRepository) ListRows(ctx context.Context, res di18n.Resource, field
 	return out, total, nil
 }
 
-// GetRows 批量取原始行（v1.12 pending：缺译清单对已有部分译文的行原样透出）。
-func (r *I18nRepository) GetRows(ctx context.Context, res di18n.Resource, ids []int64) ([]di18n.Row, error) {
-	if len(ids) == 0 {
-		return nil, nil
+// ListMissing 缺译清单直读（v1.13 用户裁定：直接读多语言表，不扫主表）：
+// 活行中该语言未录入的（texts 里没有该语言键，含 texts='{}' 空行）。
+// COUNT + Limit/Offset 正常分页（与 /texts 同一 normalizePage 惯例）；
+// 排序 (res_id, field) 升序。配合"资源创建必插空行"语义，零译文资源也有行可查。
+// JSON 路径 $.  "en-US"  由 Go 侧拼好作为参数绑定（避免 SQL 内多层引号拼接出错）。
+func (r *I18nRepository) ListMissing(ctx context.Context, res di18n.Resource, field string, lang di18n.Lang, page, pageSize int) ([]di18n.Row, int64, error) {
+	page, size := normalizePage(page, pageSize)
+	path := `$.` + `"` + string(lang) + `"`
+	base := r.d.WithContext(ctx).
+		Where("res_type = ? AND deleted_at = 0 AND NOT JSON_CONTAINS_PATH(texts, 'one', ?)", res, path)
+	if field != "" {
+		base = base.Where("field = ?", field)
+	}
+	var total int64
+	if err := base.Session(&gorm.Session{}).Model(&po.SysI18nText{}).Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("i18n.list_missing.count: %w", err)
+	}
+	q := base.Select("id", "res_type", "res_id", "field", "texts", "lang_mask", "complete", "deleted_at", "created_at", "updated_at")
+	if field != "" {
+		q = q.Order("res_id ASC")
+	} else {
+		q = q.Order("res_id ASC, field ASC")
 	}
 	var rows []po.SysI18nText
-	err := r.d.WithContext(ctx).
-		Where("res_type = ? AND deleted_at = 0 AND res_id IN ?", res, ids).
-		Find(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("i18n.get_rows: %w", err)
+	if err := q.Limit(size).Offset((page - 1) * size).Find(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("i18n.list_missing.find: %w", err)
 	}
 	out := make([]di18n.Row, 0, len(rows))
 	for _, row := range rows {
@@ -174,22 +189,7 @@ func (r *I18nRepository) GetRows(ctx context.Context, res di18n.Resource, ids []
 			DeletedAt: row.DeletedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		})
 	}
-	return out, nil
-}
-
-// CountWithLang 已录入某语言的活行数（v1.12 pending total 用）。
-// JSON 路径 $.  "en-US"  由 Go 侧拼好作为参数绑定（避免 SQL 内多层引号拼接出错）。
-func (r *I18nRepository) CountWithLang(ctx context.Context, res di18n.Resource, field string, lang di18n.Lang) (int64, error) {
-	var cnt int64
-	path := `$.` + `"` + string(lang) + `"`
-	err := r.d.WithContext(ctx).Model(&po.SysI18nText{}).
-		Where("res_type = ? AND field = ? AND deleted_at = 0 AND JSON_CONTAINS_PATH(texts, 'one', ?)",
-			res, field, path).
-		Count(&cnt).Error
-	if err != nil {
-		return 0, fmt.Errorf("i18n.count_with_lang: %w", err)
-	}
-	return cnt, nil
+	return out, total, nil
 }
 
 // DeleteAll 软删该资源全部译文行（合并粒度下墓碑 = 资源 × 字段整行；
@@ -282,6 +282,23 @@ func getManyTx(tx *gorm.DB, res di18n.Resource, ids []int64, fields []string, la
 		}
 	}
 	return out, nil
+}
+
+// ensureRowTx 确保资源某字段存在一行空译文（texts='{}'，lang_mask/complete=0）。
+// 幂等：活行已存在则不动。菜单创建语义（用户裁定 v1.13）：每个菜单必有译文行。
+func ensureRowTx(tx *gorm.DB, ids authn.IDGenerator, res di18n.Resource, id int64, field string) error {
+	var cnt int64
+	if err := tx.Model(&po.SysI18nText{}).
+		Where("res_type = ? AND res_id = ? AND field = ? AND deleted_at = 0", res, id, field).
+		Count(&cnt).Error; err != nil {
+		return fmt.Errorf("i18n.ensure_row.count: %w", err)
+	}
+	if cnt > 0 {
+		return nil
+	}
+	return tx.Create(&po.SysI18nText{
+		ID: ids.New(), ResType: string(res), ResID: id, Field: field, Texts: "{}",
+	}).Error
 }
 
 // saveTx 事务内保存（覆盖所传语言；空串=移除该语言）。

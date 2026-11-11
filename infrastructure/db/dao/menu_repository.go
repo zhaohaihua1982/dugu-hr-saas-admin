@@ -95,8 +95,15 @@ func (r *MenuRepository) Create(ctx context.Context, m *menu.Menu) error {
 		if err := tx.Create(p).Error; err != nil {
 			return wrapMenuDup(err, "menu.create")
 		}
-		if err := saveTx(tx, r.ids, di18n.ResMenu, m.ID, nameTexts(m.Names)); err != nil {
+		// 菜单创建必插一条空译文行（用户裁定 v1.13）：每菜单在统一表恒有一行；
+		// 随后 names 非默认语言部分 upsert 到该行上（saveTx 命中活行走合并更新）。
+		if err := ensureRowTx(tx, r.ids, di18n.ResMenu, m.ID, menuNameField); err != nil {
 			return err
+		}
+		if texts := nameTexts(m.Names); texts != nil {
+			if err := saveTx(tx, r.ids, di18n.ResMenu, m.ID, texts); err != nil {
+				return err
+			}
 		}
 		m.CreatedAt, m.UpdatedAt = p.CreatedAt, p.UpdatedAt
 		return nil

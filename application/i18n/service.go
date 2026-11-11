@@ -8,7 +8,6 @@ package i18n
 import (
 	"context"
 	"strconv"
-	"strings"
 
 	"dugu-hr-saas-admin/application/types"
 	di18n "dugu-hr-saas-admin/domain/i18n"
@@ -386,11 +385,9 @@ func (s *Service) DeleteBatch(ctx context.Context, req *BatchDeleteReq, opUID in
 	return map[string]interface{}{"deleted": deleted}, nil
 }
 
-// Pending 缺译清单（运营/翻译视角；v1.12 与 /texts 同构：page/page_size/total +
-// TextsItem 行形状，全部单表查询零 JOIN）。
-//   - total = Σ_field (CountLive - CountWithLang)：活资源数 - 已录该语言的行数；
-//   - 页内 items：该页主表 id → GetRows（原始行）→ 该语言不在 texts 里的行原样透出，
-//     无行的资源补零值行；key 来自 Snapshot（与 texts 列表同源）。
+// Pending 缺译清单（运营/翻译视角；v1.13 用户裁定：**直接读多语言表**——
+// ListMissing 单表查询该语言未录入的行 + 正常分页，不扫主表）。
+// 配合"资源创建必插空行"语义，零译文资源也有行可查；key 来自 Snapshot（与 /texts 同源）。
 func (s *Service) Pending(ctx context.Context, resType, lang, field string, page, pageSize int) (*PendingView, error) {
 	r, spec, err := specOf(resType)
 	if err != nil {
@@ -406,68 +403,35 @@ func (s *Service) Pending(ctx context.Context, resType, lang, field string, page
 	if field != "" && !di18n.HasField(r, field) {
 		return nil, di18n.ErrTargetUnregistered
 	}
-	fields := di18n.Fields(r)
-	if field != "" {
-		fields = []string{field}
+	rows, total, err := s.t.ListMissing(ctx, r, field, l, page, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]TextsItem, 0, len(rows))
+	snaps := make(map[string]map[int64]di18n.ResItem, 2)
+	byField := map[string][]int64{}
+	for _, row := range rows {
+		byField[row.Field] = append(byField[row.Field], row.ResID)
+	}
+	for f, ids := range byField {
+		snap, err := spec.Resolver.Snapshot(ctx, ids, f)
+		if err != nil {
+			return nil, err
+		}
+		snaps[f] = snap
+	}
+	for _, row := range rows {
+		items = append(items, TextsItem{
+			ID: row.ID, ResType: row.ResType, ResID: strconv.FormatInt(row.ResID, 10),
+			Key:   snaps[row.Field][row.ResID].Key,
+			Field: row.Field, Texts: row.Texts, LangMask: row.LangMask,
+			Complete: row.Complete, DeletedAt: row.DeletedAt,
+			CreatedAt: row.CreatedAt.Format("2006-01-02 15:04:05.000"),
+			UpdatedAt: row.UpdatedAt.Format("2006-01-02 15:04:05.000"),
+		})
 	}
 	page, size := normalizePageLocal(page, pageSize)
-	// 先生成完整缺译结果集，再分页，避免主表分页后过滤造成漏项。
-	var allIDs []int64
-	for offset := 0; ; offset += 500 {
-		ids, listErr := spec.Resolver.ListIDs(ctx, offset, 500)
-		if listErr != nil {
-			return nil, listErr
-		}
-		allIDs = append(allIDs, ids...)
-		if len(ids) < 500 {
-			break
-		}
-	}
-	allItems := make([]TextsItem, 0)
-	for start := 0; start < len(allIDs); start += 500 {
-		end := start + 500
-		if end > len(allIDs) {
-			end = len(allIDs)
-		}
-		ids := allIDs[start:end]
-		rawRows, getErr := s.t.GetRows(ctx, r, ids)
-		if getErr != nil {
-			return nil, getErr
-		}
-		rowsByID := make(map[int64]di18n.Row, len(rawRows))
-		for _, row := range rawRows {
-			rowsByID[row.ResID] = row
-		}
-		for _, f := range fields {
-			snap, snapErr := spec.Resolver.Snapshot(ctx, ids, f)
-			if snapErr != nil {
-				return nil, snapErr
-			}
-			for _, id := range ids {
-				resItem := snap[id]
-				if resItem.ID == 0 {
-					continue
-				}
-				row, hasRow := rowsByID[id]
-				if hasRow {
-					if v, ok := di18n.DecodeTextsPublic(row.Texts)[l]; ok && strings.TrimSpace(v) != "" {
-						continue
-					}
-				}
-				allItems = append(allItems, pendingItem(r, id, resItem, f, row, hasRow))
-			}
-		}
-	}
-	total := int64(len(allItems))
-	start := (page - 1) * size
-	if start > len(allItems) {
-		start = len(allItems)
-	}
-	end := start + size
-	if end > len(allItems) {
-		end = len(allItems)
-	}
-	return &PendingView{Items: allItems[start:end], Total: total, Page: page, PageSize: size}, nil
+	return &PendingView{Items: items, Total: total, Page: page, PageSize: size}, nil
 }
 
 // pendingItem 组装单条：有行 → 行原样 + key；无行（零译文资源）→ 零值行。
