@@ -56,14 +56,16 @@ func (p *I18nAPI) Meta(ctx *gin.Context) {
 	i18nResp(ctx, view, err)
 }
 
-// Texts GET /admin/i18n/texts —— 查译文（resId 可选，docs §7.5 v1.4）：
-//   - resType + resId        → 单资源全部译文（详情/表单回填，原语义）；
-//   - resType[&field=&afterId=&limit=] → 资源类型维度译文列表（resId 为空即列表模式）。
+// Texts GET /admin/i18n/texts —— 查译文（resId 可选，docs §7.5 v1.4/v1.6）：
+//   - resType + resId → 单资源全部译文（详情/表单回填，原语义）；
+//   - resType[&field=&afterId=&afterField=&limit=] → 翻译表行直读列表（非聚合，
+//     复合游标 (afterId, afterField) 防多字段行跨页截断）。
 func (p *I18nAPI) Texts(ctx *gin.Context) {
 	afterID, _ := strconv.ParseInt(ctx.Query("afterId"), 10, 64)
 	limit, _ := strconv.Atoi(ctx.Query("limit"))
 	view, err := p.i18n.Texts(ctx.Request.Context(),
-		ctx.Query("resType"), ctx.Query("field"), ctx.Query("resId"), afterID, limit)
+		ctx.Query("resType"), ctx.Query("field"), ctx.Query("resId"),
+		afterID, ctx.Query("afterField"), limit)
 	i18nResp(ctx, view, err)
 }
 

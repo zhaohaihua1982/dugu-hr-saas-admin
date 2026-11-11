@@ -177,12 +177,30 @@ type Repo interface {
 	// Save 只覆盖传入语言。texts 结构：field → lang → 译文（空串 = 删除该语言）。
 	Save(ctx context.Context, r Resource, id int64, texts map[string]map[Lang]string) error
 
+	// ListRows 译文总览分页（**非聚合**，v1.6 用户裁定）：直接投影 sys_i18n_text
+	// 合并粒度行，不做主表 join（key/source 由前端按 resId 向资源接口另取）。
+	// field 空 = 白名单全字段（行按 res_id,field 排序，游标复合 (afterID, afterField)）；
+	// field 指定 = 纯 res_id 游标。与 Get/GetMany 的"批量"不同，本方法只服务分页场景。
+	ListRows(ctx context.Context, r Resource, field string, afterID int64, afterField string, limit int) ([]Row, error)
+
 	// BatchDelete 批量软删（§7.7 三档第 2 档）：**单事务全成功或全失败**，
 	// 返回实际推进的行数；删不存在的译文幂等成功、计 0。
 	BatchDelete(ctx context.Context, keys []DelKey) (int64, error)
 
 	// DeleteAll 软删该资源全部译文（资源删除场景必须走同事务的内部信道）。
 	DeleteAll(ctx context.Context, r Resource, id int64) error
+}
+
+// Row 译文总览行（**非聚合**，v1.6）：sys_i18n_text 合并粒度行的直接投影——
+// 不做主表 join，key/source 由前端按 resId 向资源接口另取。
+// texts 不含默认语言（§7.4，存储本身排除）；LangMask/Complete 原样透出
+// （掩码位含义 = domain/i18n/bit.go langBits，前端渲染"已录入语言"用）。
+type Row struct {
+	ResID    int64
+	Field    string
+	Texts    map[Lang]string
+	LangMask int64
+	Complete bool
 }
 
 // DelKey 批量删除的操作对象：四元组（§7.1——CRUD 主键不是行 id）。
