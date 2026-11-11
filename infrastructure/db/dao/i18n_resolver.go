@@ -53,11 +53,42 @@ func (m menuI18nResolver) Snapshot(ctx context.Context, ids []int64, field strin
 
 func (menuI18nResolver) PermWrite() string { return "menu:update" } // 声明并预留（§7.8）
 
-// dictItemI18nResolver 字典项 Resolver——**随字典模块实现时注册**（§7.11 分期；
-// 字典测试仅 DI 部分见 docs/系统管理-字典(sys_dict)设计.md 实施顺序）。
+// dictItemI18nResolver 字典项 Resolver——随字典模块落地注册（docs 字典设计 §7）。
+// Key=可读标识（字典项 value）；Value=默认语言列 label。
 type dictItemI18nResolver struct{ d *db.DB }
 
-func (dictItemI18nResolver) PermWrite() string { return "dict:update" } // 预留
+func (m dictItemI18nResolver) Exists(ctx context.Context, id int64) (bool, error) {
+	var cnt int64
+	err := m.d.WithContext(ctx).Model(&po.SysDictItem{}).
+		Where("id = ? AND deleted_at = 0", id).Count(&cnt).Error
+	if err != nil {
+		return false, err
+	}
+	return cnt > 0, nil
+}
+
+func (m dictItemI18nResolver) Snapshot(ctx context.Context, ids []int64, field string) (map[int64]di18n.ResItem, error) {
+	if field != dictLabelField { // 字典项只翻 label（别处白名单也会拦）
+		return map[int64]di18n.ResItem{}, nil
+	}
+	if len(ids) == 0 {
+		return map[int64]di18n.ResItem{}, nil
+	}
+	var rows []po.SysDictItem
+	if err := m.d.WithContext(ctx).
+		Select("id", "value", "label").
+		Where("deleted_at = 0 AND id IN ?", ids).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[int64]di18n.ResItem, len(rows))
+	for _, p := range rows { // Key=业务取值（value）；Value=默认语言列 label
+		out[p.ID] = di18n.ResItem{ID: p.ID, Key: p.Value, Value: p.Label}
+	}
+	return out, nil
+}
+
+func (dictItemI18nResolver) PermWrite() string { return "dict:update" } // 预留（§7.8）
 
 // BackfillMenuI18nRows 存量菜单译文行回填（v1.14 用户裁定：所有菜单数据在
 // 统一表初始化一份记录——与"菜单创建必插空行"语义对齐）。
@@ -103,13 +134,60 @@ func BackfillMenuI18nRows(ctx context.Context, d *db.DB, ids authn.IDGenerator) 
 	return n, nil
 }
 
+// BackfillDictItemI18nRows 存量字典项译文行回填（与菜单 v1.14 用户裁定语义对齐：
+// 每个活字典项在统一表恒有一行）。幂等：只为"没有活译文行"的活项插空行（texts='{}'）；
+// 已有行（含 seed 预置译文）一律不动。返回新建行数。
+func BackfillDictItemI18nRows(ctx context.Context, d *db.DB, ids authn.IDGenerator) (int64, error) {
+	var itemIDs []int64
+	if err := d.WithContext(ctx).Model(&po.SysDictItem{}).
+		Where("deleted_at = 0").
+		Order("id ASC").Pluck("id", &itemIDs).Error; err != nil {
+		return 0, fmt.Errorf("字典项行回填: 读活项: %w", err)
+	}
+	if len(itemIDs) == 0 {
+		return 0, nil
+	}
+	have := map[int64]bool{}
+	var rows []po.SysI18nText
+	if err := d.WithContext(ctx).Model(&po.SysI18nText{}).
+		Select("res_id").
+		Where("res_type = ? AND field = ? AND deleted_at = 0", di18n.ResDictItem, dictLabelField).
+		Find(&rows).Error; err != nil {
+		return 0, fmt.Errorf("字典项行回填: 读已有译文行: %w", err)
+	}
+	for _, r := range rows {
+		have[r.ResID] = true
+	}
+	var n int64
+	for _, iid := range itemIDs {
+		if have[iid] {
+			continue
+		}
+		row := po.SysI18nText{
+			ID: ids.New(), ResType: string(di18n.ResDictItem), ResID: iid, Field: dictLabelField, Texts: "{}",
+		}
+		if err := d.WithContext(ctx).Create(&row).Error; err != nil {
+			return n, fmt.Errorf("字典项行回填: 插入 dict_item/%d: %w", iid, err)
+		}
+		n++
+	}
+	if n > 0 {
+		slog.Info("字典项译文空行回填完成", "items", len(itemIDs), "inserted", n)
+	}
+	return n, nil
+}
+
 // RegisterI18nResolvers 启动期把已落地资源的 Resolver 挂入 domain 注册表（幂等）。
-// 目前：menu（已落地）。dict_item 待字典 DAO 实现后在此追加。
+// 目前：menu、dict_item（字典模块已落地，docs 字典设计 §7 编辑入口）。
 func RegisterI18nResolvers(d *db.DB) {
 	di18n.Register(di18n.ResMenu, di18n.Spec{
 		Label:    "菜单",
 		Fields:   map[string]int{"name": 64},
 		Resolver: menuI18nResolver{d: d},
 	})
-	// di18n.Register(di18n.ResDictItem, di18n.Spec{...}) // 字典模块落地后取消注释
+	di18n.Register(di18n.ResDictItem, di18n.Spec{
+		Label:    "字典项",
+		Fields:   map[string]int{dictLabelField: 64},
+		Resolver: dictItemI18nResolver{d: d},
+	})
 }

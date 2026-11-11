@@ -1,7 +1,8 @@
 # 系统管理-字典（sys_dict）设计
 
-> 版本 v1.2 · 2026-11-10 · 从《系统管理-菜单·配置·字典设计.md》拆出（原文档 §3 / §4 / §5 / §6 / §10 的字典部分）
-> 创建：2026-11-10 · 最后修改：2026-11-10
+> 版本 v1.3 · 2026-11-10 · 从《系统管理-菜单·配置·字典设计.md》拆出（原文档 §3 / §4 / §5 / §6 / §10 的字典部分）
+> 创建：2026-11-10 · 最后修改：2026-11-11
+> v1.3 变更：**模块落地实现**（§11 实现记录）：两表 DDL 按迁移器"一条一文件"惯例拆 `sys_dict_type.sql` / `sys_dict_item.sql` 交付；seed 译文段随统一表合并粒度改写（一行 = 资源×字段 texts JSON，默认语言 zh-CN 不进译文表，§7.4）；接口分页参数按仓库惯例用 `page_size`（§3 原写 `pageSize`）；`PUT /dict-items/:id` 不收 `typeCode`（项归属类型不可变）。接口契约其余不变
 > v1.2 变更：多语言**存储改走统一表 `sys_i18n_text`**（`res_type='dict_item'`、`field='label'`），本文自建的 `sys_dict_item_i18n` 撤销；接口契约（`?lang=` / `labels`）不变。见 `基础设施-数据文案多语言(i18n)设计.md`
 > v1.1 变更：字典项 `label` 支持多语言（本期落地），原 v1.0 §7 的"待拍板"项定稿。
 > 依赖：`SaaS管理后台-管理账号(sys_user)设计.md`（操作者身份）、`系统管理-操作日志(sys_oper_log)设计.md`（写操作审计）、`基础设施-数据文案多语言(i18n)设计.md`（译文存储）
@@ -76,7 +77,7 @@ CREATE TABLE IF NOT EXISTS `sys_dict_item` (
 -- 建表见 config/sql/sys_i18n_text.sql。字典不再有 sys_dict_item_i18n 表。
 ```
 
-> 建表文件按项目惯例单独落 `config/sql/sys_dict.sql`（迁移器一次执行一条语句，故两表可分两文件），**尚未交付**；init 数据文件已存在（§6），执行顺序见那里。译文表 `sys_i18n_text` 由公共建表文件提供，字典模块不重复建。
+> 建表文件已交付（v1.3）：迁移器一次执行一条语句（`Migrate` 对每个 SQL 文件整体单语句 Exec），故两表按惯例**分两文件**——`config/sql/sys_dict_type.sql` / `config/sql/sys_dict_item.sql`，顺序登记在 `config/sqlfs.go`（`sys_i18n_text.sql` 之后）。init 数据文件 `sys_dict_init.sql`（§6）由 `migrate.go seedDict` 在结构迁移全部完成后逐条执行（多语句文件，引号感知拆分；INSERT IGNORE 幂等）。译文表 `sys_i18n_text` 由公共建表文件提供，字典模块不重复建。
 
 ### 1.3 唯一键的三条约定
 
@@ -229,11 +230,11 @@ func (s *Service) DeleteType(ctx context.Context, id int64) error
 | 现役内容 | `import_type` 类型 + `employee`（员工花名册）一项 + 三语言译文（zh-CN / zh-TW / en-US，落 `sys_i18n_text`） | FileManager 导入批次的首个真实用例 |
 | 可选段（第 3 段） | `file_biz` / `file_driver` / `file_status` / `import_status` 四类型 18 项，**默认注释** | 若决定"所有下拉统一走字典"，取消注释即可 |
 
-**执行顺序**：`sys_i18n_text.sql`（公共译文表，已交付）→ `sys_dict.sql`（两表建表，待交付）→ `sys_dict_init.sql`（数据）。init 文件头部已注明该依赖。
+**执行顺序**：`sys_i18n_text.sql`（公共译文表，已交付）→ `sys_dict_type.sql` / `sys_dict_item.sql`（两表建表，已交付）→ `sys_dict_init.sql`（数据，v1.3 起由 `seedDict` 在结构迁移全部完成后逐条执行）。init 文件头部已注明该依赖。
 
 **为什么 seed 用固定 ID 而非雪花**：可重复执行、可被 git diff 审阅、可在多环境保持一致；雪花 ID 每次执行都不同，等于每次部署都产生一批"看起来是新数据"的行。
 
-**译文的 seed 要显式写 `zh-CN` 行吗？** 要。主表 `label` 已承担默认语言，但显式写一行 `zh-CN` 让"三语齐全"成为可查询的事实（`SELECT count(DISTINCT lang)` 就能查出缺哪门语言），也避免将来默认语言切到 en-US 时，中文译文无处可取。
+**译文的 seed 要显式写 `zh-CN` 行吗？** v1.1 时的答案是"要"（旧粒度一语言一行）。v1.2 存储并入统一表、v1.5 合并粒度（一行 = 资源×字段 texts JSON）且**默认语言不进译文表**（i18n 设计 §7.4：主表 `label` 已是默认语言唯一真相，两份真相不并存）后，seed 译文行改为单行合并粒度（`{"en-US": ..., "zh-TW": ...}`，zh-CN 键不写）——"缺哪门语言"由 `pending` 缺译清单回答，不再依赖 zh-CN 显式行。
 
 ---
 
@@ -318,6 +319,29 @@ func (s *Service) DeleteType(ctx context.Context, id int64) error
    - `GET /dict-items` 响应**不含** `labels`，`GET /dict-items/:id` 才含；
 8. 字典写操作在 `sys_oper_log` 有记录（`module=dict`）。
 
+### 11.1 实现记录（v1.3 · 2026-11-11 交付）
+
+验收清单 1~8 全部实测通过（服务端 e2e）。落地文件：
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| SQL | `config/sql/sys_dict_type.sql` / `sys_dict_item.sql` / `sys_dict_init.sql` | 两表 DDL（迁移器一条一文件）+ seed（合并粒度译文）；`sqlfs.go` 登记顺序；`migrate.go seedDict` + `splitSQLStatements`（引号感知多语句拆分，seed 在结构迁移后执行） |
+| domain | `domain/dict/dict.go` + `dict_test.go` | Type/Item 聚合、`Validate`（code 蛇形/value 字符集/labels 白名单）、`DisplayLabel` 单一回退入口、六类领域错误、双仓储端口 |
+| infrastructure | `po/po.go`（SysDictType/SysDictItem）、`dao/dict_repository.go`（DictTypeRepository/DictItemRepository） | CRUD + `uk` 冲突归一（30043/30044）；label 译文走 `I18nRepository`；项创建同事务插统一表空行、删除同事务删译文行（与菜单 v1.13/v1.14 不变式对齐）；`BackfillDictItemI18nRows` 存量回填 |
+| application | `application/dict/service.go` + 根包 `application.go` | 九个用例；labels 归一化（`en_us`→`en-US`，未注册→30035）；默认语言 labels 键必须等于主表 label（不一致→30046，相等时不入译文表）；分页归一 |
+| interfaces | `api/v1/dict.go` + `routes/router.go` | §3 全部 9 条路由；`dict-items` 下拉响应为 `[{value,label}]` 数组 |
+| 公共 | `pkg/code`（30041~30046）+ `msg.go` + 六语言包 | 错误码按规范三处（+六语包）同步 |
+| i18n 注册 | `dao/i18n_resolver.go` | `dictItemI18nResolver`（Exists/Snapshot/PermWrite="dict:update" 预留）注册进 `ResDictItem`；译文管理页/pending 即覆盖字典项 |
+
+与 §3 接口清单的**实现取舍**（对前端可见的差异）：
+
+1. 分页参数用仓库惯例 `page` / `page_size`（§3 原写 `pageSize`；与 sys-users/login-logs/i18n 同一形状 `{list,total,page,page_size}`）；
+2. `GET /dict-types?code=` 为**模糊过滤**（后台搜索），`status` 精确过滤，按 code 升序；
+3. `PUT /dict-items/:id` **不收 `typeCode`**：项归属类型不可变（uk 是 `(type_id,value)`，悄悄换类型会让历史引用悬空）；移动类型不在契约内；
+4. `PUT /dict-items/:id` 的 `labels` 只覆盖所传语言；传默认语言键（zh-CN）时必须与主表 `label` 一致，相等值不入统一表（§7.4）；
+5. 详情 `labels` 为**非默认语言**译文全集（默认语言读主表 `label` 列，与菜单 names 同一读规则）；
+6. 项创建同事务在 `sys_i18n_text` 插空行（`texts='{}'`）——与菜单同一"行恒存在"不变式，`pending` 缺译清单因此覆盖全部字典项。
+
 ---
 
 ## 12. 变更记录
@@ -327,3 +351,4 @@ func (s *Service) DeleteType(ctx context.Context, id int64) error
 | v1.0 | 2026-11-10 | 从《系统管理-菜单·配置·字典设计.md》拆出独立成篇：补齐定位与分流判据、读取语义（停用/`withDisabled`/空集非错误）、`value` 与 `label` 分工、唯一键三条约定、字段可变性、接口取舍（`type` 用 code）、错误码 30040 段与预留、领域模型与"不做级联删除"、seed 约定、多语言同构方案与决策点、审计权限、缓存时机、边界与验收 |
 | v1.1 | 2026-11-10 | **多语言落定为本期实现**（原 §7 决策点取消）：新增 `sys_dict_item_i18n` 表与 DDL、§1.1 补"为什么必须子表"、接口加 `?lang=` / `labels` / 详情接口、错误码复用 30035、领域模型加 `Labels` + `DisplayLabel`、§7 重写为机制＋三条不变式＋`type.name` 不翻的理由、§6 seed 增加三语译文（`...31` 起）、§11 验收补 7 条多语言用例；`config/sql/sys_dict_init.sql` 同步加译文段与头部说明 |
 | v1.2 | 2026-11-10 | **译文存储并入统一表**：撤销自建 `sys_dict_item_i18n`（不建、不迁，字典尚未实现），改存 `sys_i18n_text`（`res_type='dict_item'`、`field='label'`）；§1.1 改写、§1.2 DDL 删子表、§1.3 唯一键改指通用 `uk_i18n`、§7 只留"为什么字典必须多语言"与三条不变式（机制统一由 `基础设施-数据文案多语言(i18n)设计.md` 持有）、§6/§11 执行顺序补 `sys_i18n_text.sql` 在前。**接口契约（`?lang=` / `labels` / 只覆盖所传语言）不变**，前端零改动 |
+| v1.3 | 2026-11-11 | **模块落地实现**（§11.1 实现记录）：两表 DDL 按迁移器"一条一文件"惯例拆两文件交付；seed 译文段随统一表合并粒度改写（单行 texts JSON，zh-CN 键不写，§7.4）；由 `seedDict`（引号感知多语句拆分）在结构迁移后逐条执行；全链路 domain/infra/application/api + 错误码 30041~30046 + `dict_item` Resolver 注册；实测验收 1~8 全过（含 labels 归一化/只覆盖所传语言/软删重建/缺译回退/统一译文接口联动）；实现取舍登记（`page_size` 惯例、`code` 模糊过滤、PUT 不收 `typeCode`、项创建同事务插空译文行） |

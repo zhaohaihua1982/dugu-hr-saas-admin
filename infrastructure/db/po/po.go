@@ -86,3 +86,36 @@ type SysI18nText struct {
 
 // TableName 表名。
 func (SysI18nText) TableName() string { return "sys_i18n_text" }
+
+// SysDictType sys_dict_type 表对象（docs 字典设计 §1.2）。软删参与唯一键：deleted_at 默认 0。
+type SysDictType struct {
+	ID        int64     `gorm:"primaryKey;column:id"` // 雪花ID，应用侧生成
+	Code      string    `gorm:"column:code"`
+	Name      string    `gorm:"column:name"`
+	Status    int8      `gorm:"column:status"`
+	Remark    string    `gorm:"column:remark"`
+	DeletedAt int64     `gorm:"column:deleted_at"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at"`
+}
+
+// TableName 表名。
+func (SysDictType) TableName() string { return "sys_dict_type" }
+
+// SysDictItem sys_dict_item 表对象（docs 字典设计 §1.2）。
+// label 是默认语言显示名（兜底）；其他语言的译文在统一翻译表（res_type='dict_item'）。
+type SysDictItem struct {
+	ID        int64     `gorm:"primaryKey;column:id"` // 雪花ID，应用侧生成
+	TypeID    int64     `gorm:"column:type_id"`
+	Label     string    `gorm:"column:label"`
+	Value     string    `gorm:"column:value"`
+	Sort      int       `gorm:"column:sort"`
+	Status    int8      `gorm:"column:status"`
+	Remark    string    `gorm:"column:remark"`
+	DeletedAt int64     `gorm:"column:deleted_at"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at"`
+}
+
+// TableName 表名。
+func (SysDictItem) TableName() string { return "sys_dict_item" }

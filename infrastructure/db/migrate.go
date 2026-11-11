@@ -102,7 +102,10 @@ func (d *DB) Migrate(ctx context.Context, ids authn.IDGenerator) error {
 	if err := d.backfillAndDropMenuI18n(ctx, ids); err != nil { // v0.6：旧译文表数据并入统一翻译表后退役（幂等）
 		return err
 	}
-	return d.mergeI18nTextRows(ctx, ids) // v0.7：统一表旧粒度（一语言一行）合并为 JSON 粒度（幂等）
+	if err := d.mergeI18nTextRows(ctx, ids); err != nil { // v0.7：统一表旧粒度（一语言一行）合并为 JSON 粒度（幂等）
+		return err
+	}
+	return d.seedDict(ctx) // 字典 seed（INSERT IGNORE 幂等；结构迁移全部完成后执行）
 }
 
 // ---------- v0.6 译文存量迁移（docs 基础设施-数据文案多语言(i18n)设计.md §9） ----------
@@ -626,6 +629,71 @@ func (d *DB) ensureIndexes(ctx context.Context) error {
 		slog.Info("迁移增量索引已创建", "table", spec.table, "index", spec.name)
 	}
 	return nil
+}
+
+// ---------- 字典 seed（docs/系统管理-字典(sys_dict)设计.md §6） ----------
+
+// seedDict 执行多语句 seed 文件 sys_dict_init.sql（INSERT IGNORE 幂等）。
+// Migrate 主链对每个 SQL 文件整体单语句 Exec；本项目首个多语句文件在此
+// 逐条执行——拆分是**引号感知**的：'...' 字符串内的分号、-- 行注释不参与拆分。
+// 放在结构迁移（含 mergeI18nTextRows）全部完成之后：旧粒度窗口内的
+// sys_i18n_text 没有 texts 列，seed 的合并粒度译文行必须在列就位后写入。
+func (d *DB) seedDict(ctx context.Context) error {
+	sql, err := conf.ReadSQL("sql/sys_dict_init.sql")
+	if err != nil {
+		return fmt.Errorf("读内嵌 seed sys_dict_init.sql: %w", err)
+	}
+	for i, stmt := range splitSQLStatements(sql) {
+		if err := d.WithContext(ctx).Exec(stmt).Error; err != nil {
+			return fmt.Errorf("执行 seed sys_dict_init.sql 第 %d 条: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+// splitSQLStatements 把多语句 SQL 源码按分号拆成单条语句（引号感知）：
+// 单引号字符串（” 转义）内的分号不拆分；-- 行注释整段跳过。
+// 仅供 seed 类文件使用——DDL 文件保持单语句整体 Exec，不走这里。
+func splitSQLStatements(src string) []string {
+	var out []string
+	var buf strings.Builder
+	inStr := false
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inStr {
+			buf.WriteByte(c)
+			if c == '\'' {
+				if i+1 < len(src) && src[i+1] == '\'' { // '' 转义
+					buf.WriteByte('\'')
+					i++
+				} else {
+					inStr = false
+				}
+			}
+			continue
+		}
+		switch {
+		case c == '\'':
+			inStr = true
+			buf.WriteByte(c)
+		case c == '-' && i+1 < len(src) && src[i+1] == '-': // 行注释
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			buf.WriteByte('\n')
+		case c == ';':
+			if s := strings.TrimSpace(buf.String()); s != "" {
+				out = append(out, s)
+			}
+			buf.Reset()
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	if s := strings.TrimSpace(buf.String()); s != "" {
+		out = append(out, s)
+	}
+	return out
 }
 
 // SeedSuperAdmin 初始超管 seed（docs §8.3、§11 P0 验收标准；仅空库时创建）。

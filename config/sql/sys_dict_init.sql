@@ -1,12 +1,14 @@
 -- 业务参考: docs/系统管理-字典(sys_dict)设计.md §1.2（两表 DDL）/§6（本文件约定）/§0（字典化判据）
---           docs/基础设施-数据文案多语言(i18n)设计.md §2（sys_i18n_text 表结构与索引）
+--           docs/基础设施-数据文案多语言(i18n)设计.md §2（sys_i18n_text 表结构与索引）/§2.4（合并粒度）
 --           docs/基础设施-文件存储(FileManager)设计.md §13.2.2（biz 双字段澄清与字典化取舍）
--- 前置: ① config/sql/sys_i18n_text.sql（公共译文表，已交付）；② sys_dict_type / sys_dict_item 建表（见字典设计文档 §1.2，config/sql/sys_dict.sql 待交付）。
--- 幂等: INSERT IGNORE，依赖唯一键 (code,deleted_at) / (type_id,value,deleted_at) / (res_type,res_id,field,lang,deleted_at)——重复执行自动跳过；
---       用 IGNORE 而非 ON DUPLICATE KEY UPDATE，避免覆盖运营在后台改过的 label/sort/status。
+-- 前置: ① config/sql/sys_i18n_text.sql（公共译文表，已交付）；② sys_dict_type.sql / sys_dict_item.sql（两表建表，已交付，迁移器一条一文件）。
+--       本文件由 migrate.go seedDict 在结构迁移全部完成后逐条执行（多语句文件，引号感知拆分）。
+-- 幂等: INSERT IGNORE，依赖唯一键 (code,deleted_at) / (type_id,value,deleted_at) / uk_i18n(res_type,res_id,field,deleted_at)
+--       ——重复执行自动跳过；用 IGNORE 而非 ON DUPLICATE KEY UPDATE，避免覆盖运营在后台改过的 label/sort/status。
 -- ID 约定: seed 固定段 9000000000000001 起（9e15）。
 --       bwmarrin/snowflake 生成的 ID 在 1e17+ 量级，永不冲突；段内按类型分块，见各行注释。
---       多语言译文用 9000000000000031 起（见第 2 段），与类型/项段位区分。
+-- 译文粒度: sys_i18n_text 为合并粒度（一行 = 资源×字段，全部语言进 texts JSON + lang_mask 位掩码）；
+--       **默认语言（zh-CN）不进译文表**（§7.4：主表 label 已是默认语言唯一真相）。
 --
 -- 字典化取舍（FileManager §13.2.2）：判断标准只有一句——这份文案谁维护？
 --   ✅ 走字典：值域随业务增长的开放枚举（import_type）——新增导入功能插一条即可，无需发版；
@@ -31,17 +33,18 @@ VALUES
     -- 扩展方式：新导入功能上线时按 sort 递增加项，例如——
     -- (9000000000000012, 9000000000000001, '考勤记录', 'attendance', 20, 0, '考勤导入上线时改为启用'),
 
--- ========== 2. 字典项多语言译文（v1.2 起统一落 sys_i18n_text，默认启用） ==========
--- 只翻 label；value 永远单值。主表 label 已是默认语言（zh-CN），此处显式补齐三语。
--- 资源标识：res_type='dict_item'，res_id=字典项 id，field='label'。
--- 缺译不报错：读取时回退主表 label；新增语言后可随时补行（INSERT IGNORE 幂等）。
+-- ========== 2. 字典项多语言译文（统一落 sys_i18n_text，合并粒度，默认启用） ==========
+-- 只翻 label；value 永远单值。主表 label 已是默认语言（zh-CN，§7.4 不进译文表）；
+-- 缺译不报错：读取时回退主表 label。lang_mask 位分配见 domain/i18n/bit.go（zh-TW=2 / en-US=4），
+-- complete=0（语言集 6 门，尚缺 ja-JP/ko-KR/es-ES 时为正确状态，启动期 RecompleteI18nRows 会重算）。
 
 INSERT IGNORE INTO `sys_i18n_text`
-    (`id`, `res_type`, `res_id`, `field`, `lang`, `content`)
+    (`id`, `res_type`, `res_id`, `field`, `texts`, `lang_mask`, `complete`)
 VALUES
-    (9000000000000031, 'dict_item', 9000000000000011, 'label', 'zh-CN', '员工花名册'),
-    (9000000000000032, 'dict_item', 9000000000000011, 'label', 'zh-TW', '員工名冊'),
-    (9000000000000033, 'dict_item', 9000000000000011, 'label', 'en-US', 'Employee Roster');
+    (9000000000000031, 'dict_item', 9000000000000011, 'label',
+     '{"en-US": "Employee Roster", "zh-TW": "員工名冊"}', 6, 0);
+-- 扩展方式：新增字典项后若需预置译文，按 (res_id,field) 一行合并插入；
+-- 或什么都不做——启动期 BackfillDictItemI18nRows 会为无行项补空行，译文运营在后台录入。
 
 -- ========== 3. （可选，默认注释）封闭枚举统一字典化 ==========
 -- 启用前提：接受这些枚举的文案由运营维护；值域校验仍以代码为准（domain/file.Biz 等常量），

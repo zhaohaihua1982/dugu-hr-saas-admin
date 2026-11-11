@@ -21,6 +21,7 @@ import (
 
 	"dugu-hr-saas-admin/application"
 	appauth "dugu-hr-saas-admin/application/auth"
+	appdict "dugu-hr-saas-admin/application/dict"
 	appi18n "dugu-hr-saas-admin/application/i18n"
 	apploginlog "dugu-hr-saas-admin/application/loginlog"
 	appmenus "dugu-hr-saas-admin/application/menus"
@@ -172,6 +173,13 @@ func assemble(ctx context.Context) (*assembled, error) {
 	} else if n > 0 {
 		slog.Info("存量菜单译文行回填", "inserted", n)
 	}
+	// 字典项译文空行回填（与菜单 v1.14 同一不变式：每个活字典项恒有一行；seed 预置译文不受影响）。
+	if n, bErr := dao.BackfillDictItemI18nRows(ctx, database, ids); bErr != nil {
+		_ = database.Close()
+		return nil, bErr
+	} else if n > 0 {
+		slog.Info("存量字典项译文行回填", "inserted", n)
+	}
 	// complete 全表重算（§2.4：语言集变化/默认语言切换后快照失效；v1.15 新增 ja/ko/es）。
 	if n, rErr := dao.RecompleteI18nRows(ctx, database); rErr != nil {
 		_ = database.Close()
@@ -187,6 +195,8 @@ func assemble(ctx context.Context) (*assembled, error) {
 		Logs:  apploginlog.NewService(logsRepo),
 		Menus: appmenus.NewService(dao.NewMenuRepository(database, ids), ids),
 		I18n:  appi18n.NewService(dao.NewI18nRepository(database, ids)),
+		Dict: appdict.NewService(dao.NewDictTypeRepository(database),
+			dao.NewDictItemRepository(database, ids), ids),
 	}
 
 	// 存量繁体译文补齐（docs《菜单繁体中文存量数据补齐建议.md》）：幂等，不覆盖人工译文。

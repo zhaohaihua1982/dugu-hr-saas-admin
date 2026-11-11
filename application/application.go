@@ -6,11 +6,13 @@ import (
 	"errors"
 
 	"dugu-hr-saas-admin/application/auth"
+	appdict "dugu-hr-saas-admin/application/dict"
 	appi18n "dugu-hr-saas-admin/application/i18n"
 	apploginlog "dugu-hr-saas-admin/application/loginlog"
 	appmenus "dugu-hr-saas-admin/application/menus"
 	appsysuser "dugu-hr-saas-admin/application/sysuser"
 	"dugu-hr-saas-admin/domain/authn"
+	ddict "dugu-hr-saas-admin/domain/dict"
 	di18n "dugu-hr-saas-admin/domain/i18n"
 	dmenu "dugu-hr-saas-admin/domain/menu"
 	"dugu-hr-saas-admin/domain/sysuser"
@@ -24,6 +26,7 @@ type Services struct {
 	Logs  *apploginlog.Service
 	Menus *appmenus.Service
 	I18n  *appi18n.Service
+	Dict  *appdict.Service
 }
 
 // CodeOf 领域错误 → pkg/code 业务码（api 层组装响应时使用）。
@@ -82,7 +85,8 @@ func CodeOf(err error) int {
 		return code.ErrorMenuHasChildren
 	case errors.Is(err, dmenu.ErrSameLevelTaken):
 		return code.ErrorMenuSameLevelTaken
-	case errors.Is(err, dmenu.ErrLangUnsupported), errors.Is(err, di18n.ErrLangUnsupported):
+	case errors.Is(err, dmenu.ErrLangUnsupported), errors.Is(err, di18n.ErrLangUnsupported),
+		errors.Is(err, ddict.ErrLangUnsupported):
 		return code.ErrorMenuLangUnsupported
 	case errors.Is(err, di18n.ErrDefaultLang):
 		return code.InvalidParams // msg 走语言包键 i18n.defaultLang（api 层 specialize）
@@ -96,6 +100,20 @@ func CodeOf(err error) int {
 		return code.ErrorMenuNameRequired
 	case errors.Is(err, dmenu.ErrBadParams):
 		return code.ErrorMenuBadParams
+	case errors.Is(err, appdict.ErrBadDictID):
+		return code.ErrorDictBadParams
+	case errors.Is(err, ddict.ErrTypeNotFound):
+		return code.ErrorDictTypeNotFound
+	case errors.Is(err, ddict.ErrItemNotFound):
+		return code.ErrorDictItemNotFound
+	case errors.Is(err, ddict.ErrTypeCodeTaken):
+		return code.ErrorDictTypeCodeTaken
+	case errors.Is(err, ddict.ErrValueTaken):
+		return code.ErrorDictValueTaken
+	case errors.Is(err, ddict.ErrTypeHasItems):
+		return code.ErrorDictTypeHasItems
+	case errors.Is(err, ddict.ErrBadParams):
+		return code.ErrorDictBadParams
 	}
 	return code.ErrorDatabase
 }

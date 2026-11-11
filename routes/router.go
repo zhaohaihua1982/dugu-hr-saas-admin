@@ -74,6 +74,7 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 	userAPI := v1.NewSysUserAPI(svc.Users)
 	logAPI := v1.NewLoginLogAPI(svc.Logs)
 	i18nAPI := v1.NewI18nAPI(svc.I18n)
+	dictAPI := v1.NewDictAPI(svc.Dict)
 
 	v1Group := r.Group("api/v1")
 	admin := v1Group.Group("admin")
@@ -119,6 +120,18 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		admin.DELETE("i18n/texts", i18nAPI.DeleteText)
 		admin.POST("i18n/texts/batch-delete", i18nAPI.BatchDelete)
 		admin.GET("i18n/pending", i18nAPI.Pending)
+
+		// 字典管理（docs 系统管理-字典(sys_dict)设计.md §3；登录即可见，不做权限过滤；
+		// dict-items 静态/参数路由共存：GET /dict-items 下拉取值，GET /dict-items/:id 详情）
+		admin.GET("dict-types", dictAPI.ListTypes)
+		admin.POST("dict-types", dictAPI.CreateType)
+		admin.PUT("dict-types/:id", dictAPI.UpdateType)
+		admin.DELETE("dict-types/:id", dictAPI.DeleteType)
+		admin.GET("dict-items", dictAPI.ListItems)
+		admin.GET("dict-items/:id", dictAPI.ItemDetail)
+		admin.POST("dict-items", dictAPI.CreateItem)
+		admin.PUT("dict-items/:id", dictAPI.UpdateItem)
+		admin.DELETE("dict-items/:id", dictAPI.DeleteItem)
 	}
 	return r
 }

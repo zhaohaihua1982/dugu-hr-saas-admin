@@ -28,6 +28,10 @@ func isDuplicate(err error) (string, bool) {
 		return "uk_menu_code", true
 	case strings.Contains(mysqlErr.Message, "uk_menu_action"):
 		return "uk_menu_action", true
+	case strings.Contains(mysqlErr.Message, "uk_dict_type"):
+		return "uk_dict_type", true
+	case strings.Contains(mysqlErr.Message, "uk_dict_item"):
+		return "uk_dict_item", true
 	}
 	return "", true
 }

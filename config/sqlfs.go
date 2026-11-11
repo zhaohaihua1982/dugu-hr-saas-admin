@@ -16,6 +16,8 @@ var SQLFiles = []string{
 	"sql/sys_user.sql",
 	"sql/sys_login_log.sql",
 	"sql/sys_i18n_text.sql",
+	"sql/sys_dict_type.sql", // 字典类型表（迁移器一次执行一条语句，两表分两文件，docs 字典设计 §1.2）
+	"sql/sys_dict_item.sql", // 字典项表（label 译文存统一表，故排在 sys_i18n_text.sql 之后）
 	"sql/sys_menu.sql",
 }
 

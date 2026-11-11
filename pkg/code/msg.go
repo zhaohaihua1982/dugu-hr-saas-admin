@@ -37,6 +37,12 @@ var msgMap = map[int]string{
 	ErrorI18nTarget:          "翻译资源类型或字段未登记",
 	ErrorI18nContent:         "译文超长或含非法字符",
 	ErrorI18nResNot:          "译文目标资源不存在或已被删除",
+	ErrorDictTypeNotFound:    "字典类型不存在",
+	ErrorDictItemNotFound:    "字典项不存在",
+	ErrorDictTypeCodeTaken:   "字典类型编码（code）已存在",
+	ErrorDictValueTaken:      "字典项取值（value）在该类型下已存在",
+	ErrorDictTypeHasItems:    "字典类型下存在字典项，禁止删除",
+	ErrorDictBadParams:       "字典参数不合法",
 }
 
 // GetMsg 获取业务码对应文案，未知码回退通用 ERROR 文案。
