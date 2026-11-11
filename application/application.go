@@ -8,12 +8,14 @@ import (
 	"dugu-hr-saas-admin/application/auth"
 	appdict "dugu-hr-saas-admin/application/dict"
 	appi18n "dugu-hr-saas-admin/application/i18n"
+	apploginconfig "dugu-hr-saas-admin/application/loginconfig"
 	apploginlog "dugu-hr-saas-admin/application/loginlog"
 	appmenus "dugu-hr-saas-admin/application/menus"
 	appsysuser "dugu-hr-saas-admin/application/sysuser"
 	"dugu-hr-saas-admin/domain/authn"
 	ddict "dugu-hr-saas-admin/domain/dict"
 	di18n "dugu-hr-saas-admin/domain/i18n"
+	dloginconfig "dugu-hr-saas-admin/domain/loginconfig"
 	dmenu "dugu-hr-saas-admin/domain/menu"
 	"dugu-hr-saas-admin/domain/sysuser"
 	"dugu-hr-saas-admin/pkg/code"
@@ -21,12 +23,13 @@ import (
 
 // Services 应用层用例集合（bootstrap 装配后整体交给 interfaces）。
 type Services struct {
-	Auth  *auth.Service
-	Users *appsysuser.Service
-	Logs  *apploginlog.Service
-	Menus *appmenus.Service
-	I18n  *appi18n.Service
-	Dict  *appdict.Service
+	Auth        *auth.Service
+	Users       *appsysuser.Service
+	Logs        *apploginlog.Service
+	Menus       *appmenus.Service
+	I18n        *appi18n.Service
+	Dict        *appdict.Service
+	LoginConfig *apploginconfig.Service
 }
 
 // CodeOf 领域错误 → pkg/code 业务码（api 层组装响应时使用）。
@@ -116,6 +119,18 @@ func CodeOf(err error) int {
 		return code.ErrorDictBadParams
 	case errors.Is(err, ddict.ErrTypeDisabled):
 		return code.ErrorDictTypeDisabled
+	case errors.Is(err, dloginconfig.ErrNotFound):
+		return code.ErrorLoginConfigNotFound
+	case errors.Is(err, dloginconfig.ErrMustKeepPwd):
+		return code.ErrorLoginConfigKeepPwd
+	case errors.Is(err, dloginconfig.ErrBadParams), errors.Is(err, dloginconfig.ErrBadExtras):
+		return code.ErrorLoginConfigBadParams
+	case errors.Is(err, dloginconfig.ErrVersionConflict):
+		return code.ErrorLoginConfigVersionConflict
+	case errors.Is(err, authn.ErrLoginMethodClosed):
+		return code.ErrorLoginMethodClosed
+	case errors.Is(err, auth.ErrSelfPwdDisabled):
+		return code.ErrorSelfPwdDisabled
 	}
 	return code.ErrorDatabase
 }

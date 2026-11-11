@@ -13,6 +13,7 @@ import (
 	v1 "dugu-hr-saas-admin/api/v1"
 	"dugu-hr-saas-admin/application"
 	"dugu-hr-saas-admin/domain/authn"
+	"dugu-hr-saas-admin/domain/loginconfig"
 	"dugu-hr-saas-admin/middleware"
 	"dugu-hr-saas-admin/pkg/code"
 	"dugu-hr-saas-admin/pkg/utils/ctl"
@@ -34,7 +35,8 @@ var PublicPaths = []string{
 
 // NewRouter 装配路由：全局 AuthGuard（未登录统一过滤，白名单放行）。
 // 与未来租户侧（/api/v1/tenant/auth/*）严格隔离、不共用登录代码（docs §2.1）。
-func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions authn.SessionStore) *gin.Engine {
+// cfgProvider：登录策略快照（滑动续期 TTL 取 access_token_ttl，docs 登录配置设计 §7）。
+func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions authn.SessionStore, cfgProvider loginconfig.Provider) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), middleware.Cors())
 	// 安全修复：gin 默认信任所有代理（XFF 头可伪造）→ ClientIP 可捏造，
@@ -46,7 +48,7 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 	}
 	r.Use(middleware.SecureHeaders())
 	// 全局统一鉴权过滤：白名单外的所有请求必须携带有效会话
-	r.Use(middleware.AuthGuard(verifier, sessions, middleware.NewWhitelist(PublicPaths...)))
+	r.Use(middleware.AuthGuard(verifier, sessions, cfgProvider, middleware.NewWhitelist(PublicPaths...)))
 
 	// 未注册路由/方法不匹配的兜底：返回 JSON 提示而非 gin 默认的纯文本 404，
 	// 帮助前端把“路径拼错/ METHOD 用错（如 GET 访问 POST 接口）”一次定位。
@@ -75,6 +77,7 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 	logAPI := v1.NewLoginLogAPI(svc.Logs)
 	i18nAPI := v1.NewI18nAPI(svc.I18n)
 	dictAPI := v1.NewDictAPI(svc.Dict)
+	loginCfgAPI := v1.NewLoginConfigAPI(svc.LoginConfig)
 
 	v1Group := r.Group("api/v1")
 	admin := v1Group.Group("admin")
@@ -90,6 +93,7 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 			auth.POST("login/sms", authAPI.LoginSms)
 			auth.POST("logout", authAPI.Logout)
 			auth.GET("me", authAPI.Me)
+			auth.POST("change-password", authAPI.ChangePassword) // 自助改密（allow_self_change_pwd 门控，登录配置 P1.5）
 		}
 
 		// 管理面：全局 AuthGuard 已要求登录，此处不再重复挂鉴权
@@ -134,6 +138,14 @@ func NewRouter(svc *application.Services, verifier authn.TokenVerifier, sessions
 		admin.PUT("dict-items/:id", dictAPI.UpdateItem)
 		admin.POST("dict-items/:id/status", dictAPI.SetItemStatus)
 		admin.DELETE("dict-items/:id", dictAPI.DeleteItem)
+
+		// 登录配置管理（docs 系统管理-登录配置设计.md §5；登录即可见，独立权限点
+		// system:login-config:write 待权限模块落地后挂载——当前与字典同策略）：
+		// login-configs/:type 参数路由共存：GET 列表 / GET :type 详情 / PUT 全量更新 / POST reset
+		admin.GET("login-configs", loginCfgAPI.List)
+		admin.GET("login-configs/:type", loginCfgAPI.Get)
+		admin.PUT("login-configs/:type", loginCfgAPI.Update)
+		admin.POST("login-configs/:type/reset", loginCfgAPI.Reset)
 	}
 	return r
 }

@@ -7,10 +7,12 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"dugu-hr-saas-admin/domain/authn"
+	"dugu-hr-saas-admin/domain/loginconfig"
 	"dugu-hr-saas-admin/pkg/code"
 	"dugu-hr-saas-admin/pkg/utils/ctl"
 )
@@ -18,8 +20,8 @@ import (
 // AuthGuard 全局鉴权过滤：
 //  1. 命中白名单（exact 或 通配前缀）→ 放行；
 //  2. 未命中 → Authorization: Bearer JWT + Redis 会话有效 + 归属一致；
-//  3. 认证请求滑动续期（8h iidTTL，24h 硬上限，docs §7）。
-func AuthGuard(verifier authn.TokenVerifier, sessions authn.SessionStore, wl *Whitelist) gin.HandlerFunc {
+//  3. 认证请求滑动续期（TTL=登录配置 access_token_ttl，硬上限键不变，docs 登录配置设计 §7）。
+func AuthGuard(verifier authn.TokenVerifier, sessions authn.SessionStore, cfg loginconfig.Provider, wl *Whitelist) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 白名单命中（healthz、登录入口等未登录接口）直接放行
 		if wl != nil && wl.Match(c.Request.URL.Path) {
@@ -57,8 +59,16 @@ func AuthGuard(verifier authn.TokenVerifier, sessions authn.SessionStore, wl *Wh
 			return
 		}
 
-		// 滑动续期（有效性已验证；此步失败不阻断请求）
-		_ = sessions.Slide(c.Request.Context(), jti)
+		// 滑动续期（有效性已验证；此步失败不阻断请求）。
+		// TTL 取登录配置快照（进程内存缓存 30s，每请求成本可忽略）；
+		// 读取失败按 0 处理 → Expire 负值会被 Redis 拒绝，故仅在 TTL>0 时执行。
+		if snap, pErr := cfg.Snapshot(c.Request.Context(), loginconfig.TypeAdmin); pErr == nil {
+			if ttl := time.Duration(snap.Config.AccessTokenTTL) * time.Second; ttl > 0 {
+				_ = sessions.Slide(c.Request.Context(), jti, ttl)
+			}
+		} else {
+			_ = sessions.Slide(c.Request.Context(), jti, authn.IssueTokenTTL)
+		}
 
 		c.Set("uid", uid)
 		c.Set("jti", jti)

@@ -9,7 +9,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"dugu-hr-saas-admin/domain/authn"
-	"dugu-hr-saas-admin/domain/sysuser"
 )
 
 // 编译期断言：实现全部被消费端口。
@@ -23,13 +22,14 @@ type SessionStore struct{ c *Client }
 // NewSessionStore 构造。
 func NewSessionStore(c *Client) *SessionStore { return &SessionStore{c} }
 
-// Create 放置 sess:{jti}（8h 滑动 + 24h 硬上限）与用户集合索引。
-func (s *SessionStore) Create(ctx context.Context, uid int64, jti string) error {
+// Create 放置 sess:{jti}（ttl 滑动 + hardTTL 硬上限，登录配置当前值）与
+// 用户索引 ZSET（score=创建毫秒，供并发会话挤最早 PruneMax 用）。
+func (s *SessionStore) Create(ctx context.Context, uid int64, jti string, ttl, hardTTL time.Duration) error {
 	pipe := s.c.raw().Pipeline()
-	pipe.Set(ctx, keySession+jti, uid, authn.IssueTokenTTL)
-	pipe.Set(ctx, keySessionAbs+jti, uid, authn.HardSessionTTL)
-	pipe.SAdd(ctx, keySessionUser+itoa(uid), jti)
-	pipe.Expire(ctx, keySessionUser+itoa(uid), authn.HardSessionTTL+time.Minute)
+	pipe.Set(ctx, keySession+jti, uid, ttl)
+	pipe.Set(ctx, keySessionAbs+jti, uid, hardTTL)
+	pipe.ZAdd(ctx, keySessionUser2+itoa(uid), redis.Z{Score: float64(time.Now().UnixMilli()), Member: jti})
+	pipe.Expire(ctx, keySessionUser2+itoa(uid), hardTTL+time.Minute)
 	_, err := pipe.Exec(ctx)
 	return err
 }
@@ -53,8 +53,9 @@ func (s *SessionStore) Get(ctx context.Context, jti string) (int64, error) {
 	return id, nil
 }
 
-// Slide 滑动续期（8h）；硬上限键缺失则拒绝。
-func (s *SessionStore) Slide(ctx context.Context, jti string) error {
+// Slide 滑动续期（ttl=登录配置 access_token_ttl，仅对仍在滑动期内的会话生效）；
+// 硬上限键缺失则拒绝。
+func (s *SessionStore) Slide(ctx context.Context, jti string, ttl time.Duration) error {
 	exist, err := s.c.raw().Exists(ctx, keySessionAbs+jti).Result()
 	if err != nil {
 		return err
@@ -62,22 +63,46 @@ func (s *SessionStore) Slide(ctx context.Context, jti string) error {
 	if exist == 0 {
 		return authn.ErrSessionNotFound
 	}
-	return s.c.raw().Expire(ctx, keySession+jti, authn.IssueTokenTTL).Err()
+	return s.c.raw().Expire(ctx, keySession+jti, ttl).Err()
+}
+
+// PruneMax 并发会话上限（docs 登录配置设计 §2.3）：超过 max 挤掉最早（score 最小）
+// 的会话。max≤0 不限（no-op）。
+func (s *SessionStore) PruneMax(ctx context.Context, uid int64, max int) error {
+	if max <= 0 {
+		return nil
+	}
+	key := keySessionUser2 + itoa(uid)
+	n, err := s.c.raw().ZCard(ctx, key).Result()
+	if err != nil || n <= int64(max) {
+		return err
+	}
+	oldest, err := s.c.raw().ZRange(ctx, key, 0, n-int64(max)-1).Result()
+	if err != nil {
+		return err
+	}
+	for _, jti := range oldest {
+		if derr := s.Delete(ctx, uid, jti); derr != nil {
+			return derr
+		}
+	}
+	return nil
 }
 
 // Delete 登出当前会话。
 func (s *SessionStore) Delete(ctx context.Context, uid int64, jti string) error {
 	pipe := s.c.raw().Pipeline()
 	pipe.Del(ctx, keySession+jti, keySessionAbs+jti)
-	pipe.SRem(ctx, keySessionUser+itoa(uid), jti)
+	pipe.ZRem(ctx, keySessionUser2+itoa(uid), jti)
+	pipe.ZRem(ctx, keySessionUser+itoa(uid), jti) // 旧 SET 索引兼容（迁移窗口内残留）
 	_, err := pipe.Exec(ctx)
 	return err
 }
 
 // KickAll 改密码/停用账号 → 全端秒踢（docs §7）。
+// 索引两代并存：sess:u:{uid}=旧 SET（升级前残留，≤24h 自灭）、sess:u2:{uid}=ZSET。
 func (s *SessionStore) KickAll(ctx context.Context, uid int64) error {
-	key := keySessionUser + itoa(uid)
-	jtis, err := s.c.raw().SMembers(ctx, key).Result()
+	jtis, err := s.memberAll(ctx, uid)
 	if err != nil {
 		return err
 	}
@@ -89,9 +114,33 @@ func (s *SessionStore) KickAll(ctx context.Context, uid int64) error {
 	if len(keys) > 0 {
 		pipe.Del(ctx, keys...)
 	}
-	pipe.Del(ctx, key)
+	pipe.Del(ctx, keySessionUser+itoa(uid), keySessionUser2+itoa(uid))
 	_, err = pipe.Exec(ctx)
 	return err
+}
+
+// memberAll 汇集两代索引的全部 jti（类型自适应：SET→SMembers / ZSET→ZRANGE 全量）。
+func (s *SessionStore) memberAll(ctx context.Context, uid int64) ([]string, error) {
+	var out []string
+	for _, key := range []string{keySessionUser + itoa(uid), keySessionUser2 + itoa(uid)} {
+		t, err := s.c.raw().Type(ctx, key).Result()
+		if err != nil || t == "none" {
+			continue
+		}
+		var members []string
+		if t == "set" {
+			members, err = s.c.raw().SMembers(ctx, key).Result()
+		} else if t == "zset" {
+			members, err = s.c.raw().ZRange(ctx, key, 0, -1).Result()
+		} else {
+			continue // 未知类型（不该发生）：跳过，主键删除兜底
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, members...)
+	}
+	return out, nil
 }
 
 // ---------- 一次性验证码存储 ----------
@@ -213,25 +262,25 @@ func (g *LoginGuard) AllowCaptcha(ctx context.Context, ip string) error {
 	return nil
 }
 
-// AllowLogin 登录接口 IP 限制：20 次/分钟。
-func (g *LoginGuard) AllowLogin(ctx context.Context, ip string) error {
+// AllowLogin 登录接口 IP 限制：limit 次/分钟（登录配置 ip_rate_limit）。
+func (g *LoginGuard) AllowLogin(ctx context.Context, ip string, limit int) error {
 	n, err := incrWindow(g.c, ctx, keyLoginIPLimit+ip, time.Minute)
 	if err != nil {
 		return err
 	}
-	if n > authn.LoginRateLimit {
+	if int64(limit) > 0 && n > int64(limit) {
 		return authn.ErrRateLimited
 	}
 	return nil
 }
 
-// AllowIPFail IP 撞库兜底：50 次/小时。
-func (g *LoginGuard) AllowIPFail(ctx context.Context, ip string) error {
+// AllowIPFail IP 撞库兜底：limit 次/小时（登录配置 ip_fail_limit）。
+func (g *LoginGuard) AllowIPFail(ctx context.Context, ip string, limit int) error {
 	n, err := incrWindow(g.c, ctx, keyIPFail+ip, time.Hour)
 	if err != nil {
 		return err
 	}
-	if n > authn.IPFailLimitHour {
+	if int64(limit) > 0 && n > int64(limit) {
 		return authn.ErrRateLimited
 	}
 	return nil
@@ -295,12 +344,12 @@ func (l *LockGuard) Remaining(ctx context.Context, uid int64) (time.Duration, er
 	return ttl, nil
 }
 
-// IncrFail 计数 +1，窗口与锁定时长一致。
-func (l *LockGuard) IncrFail(ctx context.Context, uid int64) (int, error) {
+// IncrFail 计数 +1，窗口=锁定时长（登录配置 lock_minutes）。
+func (l *LockGuard) IncrFail(ctx context.Context, uid int64, window time.Duration) (int, error) {
 	key := keyFailCount + itoa(uid)
 	pipe := l.c.raw().Pipeline()
 	incr := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, sysuser.LockDuration)
+	pipe.Expire(ctx, key, window)
 	if _, err := pipe.Exec(ctx); err != nil {
 		return 0, err
 	}
@@ -321,9 +370,9 @@ func (l *LockGuard) ResetFail(ctx context.Context, uid int64, idMask, ip string)
 		keyLoginStreakKey+idMask+"@"+ip).Err()
 }
 
-// IncrStreak uid 维度步数。
-func (l *LockGuard) IncrStreak(ctx context.Context, uid int64) (int, error) {
-	n, err := incrWindow(l.c, ctx, keyLoginStreakUID+itoa(uid), sysuser.LockDuration)
+// IncrStreak uid 维度步数（窗口=锁定时长）。
+func (l *LockGuard) IncrStreak(ctx context.Context, uid int64, window time.Duration) (int, error) {
+	n, err := incrWindow(l.c, ctx, keyLoginStreakUID+itoa(uid), window)
 	return int(n), err
 }
 
@@ -337,8 +386,8 @@ func (l *LockGuard) GetStreak(ctx context.Context, uid int64) (int, error) {
 }
 
 // IncrStreakByKey 账号不存在时的“标识+IP”兜底计数。
-func (l *LockGuard) IncrStreakByKey(ctx context.Context, idMask, ip string) (int, error) {
-	n, err := incrWindow(l.c, ctx, keyLoginStreakKey+idMask+"@"+ip, sysuser.LockDuration)
+func (l *LockGuard) IncrStreakByKey(ctx context.Context, idMask, ip string, window time.Duration) (int, error) {
+	n, err := incrWindow(l.c, ctx, keyLoginStreakKey+idMask+"@"+ip, window)
 	return int(n), err
 }
 

@@ -16,6 +16,7 @@ import (
 	"dugu-hr-saas-admin/application/types"
 	"dugu-hr-saas-admin/domain/authn"
 	ddict "dugu-hr-saas-admin/domain/dict"
+	dloginconfig "dugu-hr-saas-admin/domain/loginconfig"
 	"dugu-hr-saas-admin/pkg/code"
 	"dugu-hr-saas-admin/pkg/utils/ctl"
 )
@@ -51,23 +52,34 @@ func ErrorResponse(ctx *gin.Context, err error) {
 		ctl.RespError(ctx, err, code.InvalidParams, fields)
 		return
 	}
-	// 字典 30046 带违规字段提示（v1.5）：BadField 包装保持 errors.Is 语义，
+	// 字典 30046 / 登录配置 30049 带违规字段提示：BadField 包装保持 errors.Is 语义，
 	// data=[字段名] 让前端/联调一眼定位是哪个参数不合法。
 	var bf *ddict.BadField
 	if errors.As(err, &bf) {
 		ctl.RespError(ctx, err, application.CodeOf(err), []string{bf.Field})
 		return
 	}
+	var lbf *dloginconfig.BadField
+	if errors.As(err, &lbf) {
+		ctl.RespError(ctx, err, application.CodeOf(err), []string{lbf.Field})
+		return
+	}
 	ctl.RespError(ctx, err, application.CodeOf(err), nil)
 }
 
-// respondAuthError 认证错误响应：data 附变长字段（remaining_seconds / captcha_required，docs §10）。
+// respondAuthError 认证错误响应：data 附变长字段（remaining_seconds /
+// captcha_required / unlock_by_admin，docs §10 + 登录配置设计 §7 unlock_mode）。
 func respondAuthError(ctx *gin.Context, err error) {
 	status := application.CodeOf(err)
 	data := map[string]interface{}{}
 	var le *authn.ErrLocked
 	if errors.As(err, &le) {
-		data["remaining_seconds"] = int64(le.Remaining / time.Second)
+		switch {
+		case le.Remaining < 0: // 仅管理员解锁语义（unlock_mode=2 哨兵锁 / 人工冻结长锁）
+			data["unlock_by_admin"] = true
+		case le.Remaining > 0:
+			data["remaining_seconds"] = int64(le.Remaining / time.Second)
+		}
 	}
 	if status == code.ErrorCaptchaRequired {
 		data["captcha_required"] = true

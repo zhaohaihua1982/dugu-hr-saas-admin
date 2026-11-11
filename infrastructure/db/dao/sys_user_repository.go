@@ -43,14 +43,15 @@ func toDomainUser(p *po.SysUser) *sysuser.User {
 			Salt:         p.Salt,
 			PwdUpdatedAt: p.PwdUpdatedAt,
 		},
-		Mobile:       sysuser.Mobile{Hash: p.MobileHash, Enc: p.MobileEnc, Mask: p.MobileMask},
-		FailCount:    p.FailCount,
-		LockedUntil:  p.LockedUntil,
-		LastLoginAt:  p.LastLoginAt,
-		LastLoginIP:  p.LastLoginIP,
-		PwdUpdatedAt: p.PwdUpdatedAt,
-		CreatedAt:    p.CreatedAt,
-		UpdatedAt:    p.UpdatedAt,
+		Mobile:         sysuser.Mobile{Hash: p.MobileHash, Enc: p.MobileEnc, Mask: p.MobileMask},
+		FailCount:      p.FailCount,
+		LockedUntil:    p.LockedUntil,
+		LastLoginAt:    p.LastLoginAt,
+		LastLoginIP:    p.LastLoginIP,
+		PwdUpdatedAt:   p.PwdUpdatedAt,
+		PwdForceChange: p.PwdForceChange,
+		CreatedAt:      p.CreatedAt,
+		UpdatedAt:      p.UpdatedAt,
 	}
 }
 
@@ -66,20 +67,21 @@ func toIPOStatus(s *sysuser.Status) *int {
 func (r *SysUserRepository) Create(ctx context.Context, u *sysuser.User) error {
 	now := time.Now()
 	p := &po.SysUser{
-		ID:           u.ID,
-		Username:     u.Username,
-		PasswordHash: u.Credential.Hash,
-		PasswordAlgo: u.Credential.Algo,
-		Salt:         u.Credential.Salt,
-		Name:         u.Name,
-		MobileHash:   u.Mobile.Hash,
-		MobileEnc:    u.Mobile.Enc,
-		MobileMask:   u.Mobile.Mask,
-		Email:        u.Email,
-		Status:       int(u.Status),
-		PwdUpdatedAt: u.PwdUpdatedAt,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:             u.ID,
+		Username:       u.Username,
+		PasswordHash:   u.Credential.Hash,
+		PasswordAlgo:   u.Credential.Algo,
+		Salt:           u.Credential.Salt,
+		Name:           u.Name,
+		MobileHash:     u.Mobile.Hash,
+		MobileEnc:      u.Mobile.Enc,
+		MobileMask:     u.Mobile.Mask,
+		Email:          u.Email,
+		Status:         int(u.Status),
+		PwdUpdatedAt:   u.PwdUpdatedAt,
+		PwdForceChange: u.PwdForceChange,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if err := r.d.WithContext(ctx).Create(p).Error; err != nil {
 		if idx, dup := isDuplicate(err); dup {
@@ -182,6 +184,8 @@ func (r *SysUserRepository) UpdateMobile(ctx context.Context, id int64, m sysuse
 }
 
 // UpdatePassword 更新凭证（改密/重置/透明升级共用）。
+// 注意：不清 pwd_force_change——透明升级（旧算法迁 bcrypt）也走此路径，不算改密；
+// 标记的清除由改密链路显式调 SetPwdForceChange(false)。
 func (r *SysUserRepository) UpdatePassword(ctx context.Context, id int64, c sysuser.Credential) error {
 	res := r.d.WithContext(ctx).Model(&po.SysUser{}).
 		Where("id = ? AND deleted_at = 0", id).
@@ -196,6 +200,17 @@ func (r *SysUserRepository) UpdatePassword(ctx context.Context, id int64, c sysu
 	}
 	if res.RowsAffected == 0 {
 		return sysuser.ErrNotFound
+	}
+	return nil
+}
+
+// SetPwdForceChange 首登强制改密标记置位/清除（登录配置 P1.5）。
+func (r *SysUserRepository) SetPwdForceChange(ctx context.Context, id int64, on bool) error {
+	res := r.d.WithContext(ctx).Model(&po.SysUser{}).
+		Where("id = ? AND deleted_at = 0", id).
+		Update("pwd_force_change", on)
+	if res.Error != nil {
+		return fmt.Errorf("sysuser.set_pwd_force_change: %w", res.Error)
 	}
 	return nil
 }

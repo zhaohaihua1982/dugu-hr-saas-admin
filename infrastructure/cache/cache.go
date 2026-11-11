@@ -52,9 +52,10 @@ func (c *Client) raw() *redis.Client { return c.rdb }
 // ---------- Redis key 规则（docs §5/§7） ----------
 
 const (
-	keySession        = "sess:"             // sess:{jti} → uid，TTL 8h 滑动
-	keySessionAbs     = "sess:abs:"         // sess:abs:{jti} → 硬上限标记，TTL 24h
-	keySessionUser    = "sess:u:"           // sess:u:{uid} → SET(jti)，秒踢全端
+	keySession        = "sess:"             // sess:{jti} → uid，TTL=登录配置 access_token_ttl 滑动
+	keySessionAbs     = "sess:abs:"         // sess:abs:{jti} → 硬上限标记，TTL=登录配置 session_hard_ttl
+	keySessionUser    = "sess:u:"           // sess:u:{uid} → SET(jti)，旧索引（升级前残留）
+	keySessionUser2   = "sess:u2:"          // sess:u2:{uid} → ZSET(jti, score=创建毫秒)，挤最早用
 	keyCaptcha        = "captcha:"          // captcha:{id} → 答案，一次性
 	keyLoginIPLimit   = "login:limit:ip:"   // IP 登录限流
 	keyLoginStreakUID = "login:streak:uid:" // uid 维度连续失败

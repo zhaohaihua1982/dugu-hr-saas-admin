@@ -3,6 +3,7 @@ package sysuser
 
 import (
 	"errors"
+	"strings"
 	"time"
 	"unicode"
 )
@@ -32,9 +33,26 @@ func HashPassword(h PasswordHasher, pwd string) (Credential, error) { return h.H
 
 // ---------- 密码策略（docs §8.2：≥10 位且至少两类字符） ----------
 
-// ValidatePassword 纯函数策略校验。
+// ValidatePassword 纯函数策略校验（默认档：≥10 位两类字符）。
+// 运行时真值来自登录配置（ValidatePasswordPolicy）；本函数保留给
+// bootstrap seed 等读不到配置的场景（与登录配置 §2.4 等级 2 预设一致）。
 func ValidatePassword(pwd string) error {
-	if len(pwd) < 10 {
+	return ValidatePasswordPolicy(pwd, "", PwdPolicy{MinLength: 10, MinClasses: 2})
+}
+
+// PwdPolicy 运行时密码策略（来自登录配置明细字段——唯一真相，docs 登录配置设计 §2.4）。
+type PwdPolicy struct {
+	MinLength      int  // pwd_min_length
+	MinClasses     int  // pwd_min_classes
+	ForbidUsername bool // pwd_forbid_username：含账号名/倒序即拒绝
+}
+
+// ValidatePasswordPolicy 按登录配置校验新密码（改密/创建/重置共用）。
+// 密码策略只对新写入生效，不追溯存量（docs 登录配置设计 §2.4）。
+// 说明：等级 3 预设的"不含 3 位以上连续/重复字符"在明细字段中无对应列——按
+// "明细字段是唯一真相"原则运行时不表达（登记于登录配置设计 §11 偏差）。
+func ValidatePasswordPolicy(pwd, username string, p PwdPolicy) error {
+	if len(pwd) < p.MinLength {
 		return ErrWeakPassword
 	}
 	var lower, upper, digit, other bool
@@ -56,8 +74,20 @@ func ValidatePassword(pwd string) error {
 			n++
 		}
 	}
-	if n < 2 {
+	if n < p.MinClasses {
 		return ErrWeakPassword
+	}
+	if p.ForbidUsername && username != "" && len(username) >= 3 {
+		lu := strings.ToLower(pwd)
+		ru := []rune(username)
+		// 倒序账号名
+		rev := make([]rune, 0, len(ru))
+		for i := len(ru) - 1; i >= 0; i-- {
+			rev = append(rev, ru[i])
+		}
+		if strings.Contains(lu, strings.ToLower(username)) || strings.Contains(lu, strings.ToLower(string(rev))) {
+			return ErrWeakPassword
+		}
 	}
 	return nil
 }

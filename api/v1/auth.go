@@ -94,12 +94,36 @@ func (p *AuthAPI) Logout(ctx *gin.Context) {
 	ctl.RespSuccess(ctx, nil)
 }
 
-// Me GET /auth/me（需登录态）。
+// Me GET /auth/me（需登录态）。密码时效三态：password_stale=已过期 /
+// pwd_expiring=进入提前提醒窗口 / pwd_must_change=到期强制改密或首登强制改密
+// （docs 登录配置设计 §2.4/§7）。
 func (p *AuthAPI) Me(ctx *gin.Context) {
-	user, stale, err := p.auth.Me(ctx.Request.Context(), ctx.GetInt64(keyUID), time.Now())
+	user, expired, expiring, must, err := p.auth.Me(ctx.Request.Context(), ctx.GetInt64(keyUID), time.Now())
 	if err != nil {
 		respondAuthError(ctx, err)
 		return
 	}
-	ctl.RespSuccess(ctx, gin.H{"user": user, "password_stale": stale})
+	ctl.RespSuccess(ctx, gin.H{
+		"user":            user,
+		"password_stale":  expired, // 兼容保留字段（语义=已过期）
+		"pwd_expiring":    expiring,
+		"pwd_must_change": must,
+	})
+}
+
+// ChangePassword POST /auth/change-password —— 自助修改密码（需登录态）。
+// 受 allow_self_change_pwd 门控（关闭 → 30053）；成功且 kick_on_pwd_change=1 时
+// 全端秒踢（含当前端，前端应引导重新登录）。
+func (p *AuthAPI) ChangePassword(ctx *gin.Context) {
+	var req appauth.ChangePasswordReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(ctx, err)
+		return
+	}
+	if err := p.auth.ChangePassword(ctx.Request.Context(), ctx.GetInt64(keyUID), &req,
+		requestParams(ctx), time.Now()); err != nil {
+		respondAuthError(ctx, err)
+		return
+	}
+	ctl.RespSuccess(ctx, nil)
 }

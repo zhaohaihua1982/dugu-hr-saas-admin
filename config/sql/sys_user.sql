@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS `sys_user` (
     `last_login_at`  DATETIME(3)   NULL,
     `last_login_ip`  VARCHAR(45)   NOT NULL DEFAULT '',
     `pwd_updated_at` DATETIME(3)   NULL,
+    `pwd_force_change` TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '首登强制改密标记：管理员代建/重置后置位（pwd_force_first_change=1 时），改密成功清除',
     `deleted_at`     BIGINT        NOT NULL DEFAULT 0,
     `created_at`     DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updated_at`     DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),

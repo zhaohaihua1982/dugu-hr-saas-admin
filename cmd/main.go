@@ -23,6 +23,7 @@ import (
 	appauth "dugu-hr-saas-admin/application/auth"
 	appdict "dugu-hr-saas-admin/application/dict"
 	appi18n "dugu-hr-saas-admin/application/i18n"
+	apploginconfig "dugu-hr-saas-admin/application/loginconfig"
 	apploginlog "dugu-hr-saas-admin/application/loginlog"
 	appmenus "dugu-hr-saas-admin/application/menus"
 	appsysuser "dugu-hr-saas-admin/application/sysuser"
@@ -164,6 +165,11 @@ func assemble(ctx context.Context) (*assembled, error) {
 	lock := cache.NewLockGuard(redisClient)
 	codes := cache.NewSmsCodeStore(redisClient)
 
+	// 登录配置（docs 登录配置设计）：仓储 + 三级缓存 Provider（管线读快照，管理端读写配置）
+	loginCfgRepo := dao.NewLoginConfigRepository(database)
+	cfgProvider := cache.NewLoginConfigProvider(loginCfgRepo, redisClient)
+	pwdHistoryRepo := dao.NewPasswordHistoryRepository(database, ids)
+
 	// ---------- application ----------
 	// 资源 Resolver 注册（docs 基础设施-i18n设计 §7.3）：menu 已落地；dict_item 随字典模块追加。
 	dao.RegisterI18nResolvers(database)
@@ -190,13 +196,16 @@ func assemble(ctx context.Context) (*assembled, error) {
 
 	svc := &application.Services{
 		Auth: appauth.NewService(users, logsRepo, tokens, sessions, captchaSvc,
-			guard, lock, codes, smsSenderStub{}, mobileCrypto, hasher, ids),
-		Users: appsysuser.NewService(users, sessions, lock, mobileCrypto, hasher, ids),
+			guard, lock, codes, smsSenderStub{}, mobileCrypto, hasher, ids,
+			cfgProvider, pwdHistoryRepo),
+		Users: appsysuser.NewService(users, sessions, lock, mobileCrypto, hasher, ids,
+			cfgProvider, pwdHistoryRepo),
 		Logs:  apploginlog.NewService(logsRepo),
 		Menus: appmenus.NewService(dao.NewMenuRepository(database, ids), ids),
 		I18n:  appi18n.NewService(dao.NewI18nRepository(database, ids)),
 		Dict: appdict.NewService(dao.NewDictTypeRepository(database),
 			dao.NewDictItemRepository(database, ids), ids),
+		LoginConfig: apploginconfig.NewService(loginCfgRepo, cfgProvider, ids),
 	}
 
 	// 存量繁体译文补齐（docs《菜单繁体中文存量数据补齐建议.md》）：幂等，不覆盖人工译文。
@@ -209,7 +218,7 @@ func assemble(ctx context.Context) (*assembled, error) {
 	slog.Info("zh-TW 菜单译文补齐完成", "filled", filled, "skipped", skipped, "missing", missing)
 
 	// ---------- interfaces ----------
-	router := routes.NewRouter(svc, tokens, sessions)
+	router := routes.NewRouter(svc, tokens, sessions, cfgProvider)
 
 	return &assembled{router: router, releaseHost: func() error {
 		var errs []error

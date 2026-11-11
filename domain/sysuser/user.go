@@ -41,6 +41,9 @@ const (
 const SuperAdminUsername = "admin"
 
 // 安全策略阈值（docs §6/§8.2/§8.7）。
+// 注意：登录配置（docs 登录配置设计）上线后，fail_threshold/lock_minutes/streak
+// 的运行时真值来自 loginconfig.Provider 快照——这些常量保留为代码兜底默认值
+// （同 §3.2 seed 值）与旧测试基线，管线不再直接读。
 const (
 	FailThreshold    = 5                // 连续错 5 次锁定
 	LockDuration     = 15 * time.Minute // 锁 15 分钟；锁定期内尝试不重置计时
@@ -69,9 +72,10 @@ type User struct {
 	LastLoginAt *time.Time
 	LastLoginIP string
 
-	PwdUpdatedAt *time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	PwdUpdatedAt   *time.Time
+	PwdForceChange bool // 首登强制改密标记（登录配置 P1.5）：登录响应 pwd_must_change，改密成功清除
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // IsDisabled 停用判定。
@@ -94,8 +98,28 @@ func (u *User) LockedRemaining(now time.Time) time.Duration {
 func (u *User) IsSuper() bool { return u.Username == SuperAdminUsername }
 
 // PasswordStale 密码超期提示（不强制，docs §8.2）。
+// 登录配置上线后管线改用 PwdAging（按配置 maxAge/remind 计算）；本方法保留为
+// 固定 180 天的旧口径（seed 校验等处复用）。
 func (u *User) PasswordStale(now time.Time) bool {
 	return u.PwdUpdatedAt != nil && now.Sub(*u.PwdUpdatedAt) > PasswordStaleAge
+}
+
+// PwdAging 按登录配置计算密码时效（docs 登录配置设计 §2.4/§7）：
+//   - maxAgeDays=0 → 不过期（两个标志恒 false）；
+//   - Expired：已过有效期（动作 1=提示、动作 2=登录响应 pwd_must_change）；
+//   - Expiring：有效期内且剩余 ≤ remind_days（登录响应 pwd_expiring）。
+//
+// pwd_max_age_days 从 N 改为 0（取消过期）时无需清理存量标记：过期态是即时计算的
+// （docs §8 边界：存量"已到期"标记随下次登录清除——本实现无落库标记，天然满足）。
+func (u *User) PwdAging(now time.Time, maxAgeDays, remindDays int) (expired, expiring bool) {
+	if maxAgeDays <= 0 || u.PwdUpdatedAt == nil {
+		return false, false
+	}
+	deadline := u.PwdUpdatedAt.Add(time.Duration(maxAgeDays) * 24 * time.Hour)
+	if now.After(deadline) {
+		return true, false
+	}
+	return false, remindDays > 0 && now.After(deadline.Add(-time.Duration(remindDays)*24*time.Hour))
 }
 
 // ---------- 列表查询模型 ----------
@@ -132,8 +156,12 @@ type Repository interface {
 	SaveProfile(ctx context.Context, id int64, name, email string, status *Status) error
 	// UpdateMobile 换绑手机号（三列一起改，§3.3①）；冲突返回 ErrMobileTaken。
 	UpdateMobile(ctx context.Context, id int64, m Mobile) error
-	// UpdatePassword 更新凭证（改密/重置/旧算法透明升级共用）。
+	// UpdatePassword 更新凭证（改密/重置/旧算法透明升级共用；不动 pwd_force_change
+	// ——透明升级不算改密，标记由改密链路经 SetPwdForceChange 显式维护）。
 	UpdatePassword(ctx context.Context, id int64, c Credential) error
+	// SetPwdForceChange 首登强制改密标记置位/清除（登录配置 P1.5：
+	// 管理员代建/重置密码且 pwd_force_first_change=1 时置位）。
+	SetPwdForceChange(ctx context.Context, id int64, on bool) error
 	// SaveLoginSuccess 登录成功：写最近登录、清零失败计数与锁定。
 	SaveLoginSuccess(ctx context.Context, id int64, ip string, at time.Time) error
 	// IncrFailures 失败计数（Redis 是加速，DB 兜底，docs §6）。
@@ -146,4 +174,15 @@ type Repository interface {
 	SoftDelete(ctx context.Context, id int64, at time.Time) error
 	// List 分页列表。
 	List(ctx context.Context, q ListQuery) (*ListResult, error)
+}
+
+// UserTypeEnum 历史密码表 user_type 取值（docs 登录配置设计 §10 P1.5）。
+const UserTypeEnumSysUser int8 = 1
+
+// PasswordHistory 历史密码端口（infrastructure/db/dao 实现，sys_password_history 表）。
+// 语义：改密/重置成功时 Append 旧 hash；新密码校验 RecentHashes 取最近 N 行
+// 逐条 bcrypt 比对（docs 登录配置设计 §2.4）。
+type PasswordHistory interface {
+	Append(ctx context.Context, userType int8, userID int64, hash string) error
+	RecentHashes(ctx context.Context, userType int8, userID int64, n int) ([]string, error)
 }

@@ -12,7 +12,8 @@ import (
 
 // ---------- 会话模型（docs §7） ----------
 
-// 会话策略常量（docs §7）。
+// 会话策略常量（docs §7）。数值作为代码兜底默认值保留（docs 登录配置设计 §3.3：
+// 配置读不到时按同一份常量回落；运行时一律读 loginconfig.Provider 快照）。
 const (
 	IssueTokenTTL   = 8 * time.Hour  // JWT 期满（配合 Redis 键滑动续期）
 	HardSessionTTL  = 24 * time.Hour // 硬上限，杜绝靠“持续活动”永不过期
@@ -44,6 +45,9 @@ var (
 	ErrSmsExpired      = errors.New("authn: sms code expired")
 	ErrSmsSendFailed   = errors.New("authn: sms send failed")
 	ErrRateLimited     = errors.New("authn: rate limited")
+	// ErrLoginMethodClosed 登录组件在 login_mask 中关闭（docs 登录配置设计 §2.1：
+	// 前端隐藏只是体验，接口侧独立校验防绕过）。
+	ErrLoginMethodClosed = errors.New("authn: login method closed")
 )
 
 // ErrLocked 账号锁定错误，携带剩余秒数（docs §10：拒绝并返回 remaining_seconds）。
@@ -61,9 +65,10 @@ type Token struct {
 }
 
 // TokenIssuer 令牌签发端口（infrastructure/token 实现）。
-// 权限不进 token：只带 user_id 与 jti（docs §7）。
+// 权限不进 token：只带 user_id 与 jti（docs §7）。ttl 来自登录配置 access_token_ttl
+// （docs 登录配置设计 §7：仅新签发的会话生效，存量按签发时 TTL）。
 type TokenIssuer interface {
-	Issue(ctx context.Context, uid int64) (Token, error)
+	Issue(ctx context.Context, uid int64, ttl time.Duration) (Token, error)
 }
 
 // TokenVerifier 令牌校验端口（中间件用：解析+验签+过期校验）。
@@ -72,15 +77,18 @@ type TokenVerifier interface {
 }
 
 // SessionStore 会话存储端口（Redis 实现）。
-// 语义（docs §7）：Create 放置 sess:{jti}（8h 滑动 + 24h 硬上限）；
-// Get 校验有效性并须与 JWT 载荷 uid 一致；Slide 每次请求续期；
-// KickAll 改密/停用账号 → 全端秒踢。
+// 语义（docs §7）：Create 放置 sess:{jti}（ttl 滑动 + hardTTL 硬上限，均为登录配置
+// 当前值——仅新签发会话生效）；Get 校验有效性并须与 JWT 载荷 uid 一致；
+// Slide 每次请求续期；KickAll 改密/停用账号 → 全端秒踢；
+// PruneMax 同账号并发会话上限（挤出最早会话，docs 登录配置设计 §2.3）。
 type SessionStore interface {
-	Create(ctx context.Context, uid int64, jti string) error
+	Create(ctx context.Context, uid int64, jti string, ttl, hardTTL time.Duration) error
 	Get(ctx context.Context, jti string) (uid int64, err error)
-	Slide(ctx context.Context, jti string) error
+	Slide(ctx context.Context, jti string, ttl time.Duration) error
 	Delete(ctx context.Context, uid int64, jti string) error
 	KickAll(ctx context.Context, uid int64) error
+	// PruneMax 并发会话上限：超过 max 挤掉最早的会话（max≤0 不限，no-op）。
+	PruneMax(ctx context.Context, uid int64, max int) error
 }
 
 // ---------- 端口：验证码与短信 ----------
@@ -137,10 +145,10 @@ type SmsCodeStore interface {
 type LoginGuard interface {
 	// AllowCaptcha 图形验证码签发限流（10/min、60/h）。
 	AllowCaptcha(ctx context.Context, ip string) error
-	// AllowLogin 登录接口 IP 限流（20/min）。
-	AllowLogin(ctx context.Context, ip string) error
-	// AllowIPFail IP 撞库兜底（50/h）；
-	AllowIPFail(ctx context.Context, ip string) error
+	// AllowLogin 登录接口 IP 限流（limit=次/分钟，登录配置 ip_rate_limit）。
+	AllowLogin(ctx context.Context, ip string, limit int) error
+	// AllowIPFail IP 撞库兜底（limit=次/小时，登录配置 ip_fail_limit）。
+	AllowIPFail(ctx context.Context, ip string, limit int) error
 	// RecordIPFail 登录失败计数（u 存在与否都计入）。
 	RecordIPFail(ctx context.Context, ip string) error
 	// AllowSms 短信发送配额（单手机 1/min、10/day；单 IP 100/day，docs §5）。
@@ -151,18 +159,18 @@ type LoginGuard interface {
 type LockGuard interface {
 	// Remaining 当前锁定剩余时长；未锁定返回 0。语义同 docs §6：绝不因 Redis 故障放行（错误上抛）。
 	Remaining(ctx context.Context, uid int64) (time.Duration, error)
-	// IncrFail 失败计数 +1，返回新值。
-	IncrFail(ctx context.Context, uid int64) (int, error)
+	// IncrFail 失败计数 +1，返回新值（window=计数窗口，取登录配置 lock_minutes）。
+	IncrFail(ctx context.Context, uid int64, window time.Duration) (int, error)
 	// MarkLocked 写锁定标记，TTL=锁定时长（锁定期内尝试不重置计时）。
 	MarkLocked(ctx context.Context, uid int64, d time.Duration) error
 	// ResetFail 成功登录后清零（含 streak）。
 	ResetFail(ctx context.Context, uid int64, idMask, ip string) error
-	// IncrStreak 连续失败步数（uid 维度，触发 Captcha）。
-	IncrStreak(ctx context.Context, uid int64) (int, error)
+	// IncrStreak 连续失败步数（uid 维度，触发 Captcha；window 同 lock_minutes）。
+	IncrStreak(ctx context.Context, uid int64, window time.Duration) (int, error)
 	// GetStreak 读取 uid 维度步数。
 	GetStreak(ctx context.Context, uid int64) (int, error)
 	// IncrStreakByKey 标识不存在时按“标识+IP”兜底计数（docs §10）。
-	IncrStreakByKey(ctx context.Context, idMask, ip string) (int, error)
+	IncrStreakByKey(ctx context.Context, idMask, ip string, window time.Duration) (int, error)
 }
 
 // IDGenerator 雪花 ID 生成端口。

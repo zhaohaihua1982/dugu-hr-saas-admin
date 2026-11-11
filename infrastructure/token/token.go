@@ -27,14 +27,18 @@ var (
 	_ authn.TokenVerifier = (*Service)(nil)
 )
 
-// Issue 为 user 签发会话 token（exp=8h；jti 为 Redis 会话键）。
-func (s *Service) Issue(_ context.Context, uid int64) (authn.Token, error) {
+// Issue 为 user 签发会话 token（exp=ttl，来自登录配置 access_token_ttl；
+// jti 为 Redis 会话键）。
+func (s *Service) Issue(_ context.Context, uid int64, ttl time.Duration) (authn.Token, error) {
+	if ttl <= 0 {
+		ttl = authn.IssueTokenTTL // 兜底（docs 登录配置设计 §3.3）
+	}
 	jti := randJTI()
 	claims := jwtpkg.RegisteredClaims{
 		ID:        jti,
 		Issuer:    issuer,
 		IssuedAt:  jwtpkg.NewNumericDate(time.Now()),
-		ExpiresAt: jwtpkg.NewNumericDate(time.Now().Add(authn.IssueTokenTTL)),
+		ExpiresAt: jwtpkg.NewNumericDate(time.Now().Add(ttl)),
 	}
 	value, err := jwtpkg.NewWithClaims(jwtpkg.SigningMethodHS256, jwtClaims{
 		UID:              uid,
@@ -43,7 +47,7 @@ func (s *Service) Issue(_ context.Context, uid int64) (authn.Token, error) {
 	if err != nil {
 		return authn.Token{}, fmt.Errorf("issue token: %w", err)
 	}
-	return authn.Token{Value: value, JTI: jti, TTL: authn.IssueTokenTTL}, nil
+	return authn.Token{Value: value, JTI: jti, TTL: ttl}, nil
 }
 
 // Verify 解析+验签+过期校验；仅接受 HS256（防算法替换）。

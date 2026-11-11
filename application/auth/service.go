@@ -1,10 +1,17 @@
 // Package auth —— 认证用例：账号密码/手机密码/手机短信三入口汇一管线（docs §4）。
 // 管线铁律（docs §4.1）：解析只判存在 → 因子校验 → 状态判定 → 签发+清计数+日志。
+//
+// 登录配置（docs/系统管理-登录配置设计.md）上线后，管线各环节参数来自
+// loginconfig.Provider 快照（§4 三级缓存，读不到回落代码兜底默认值，绝不拒登）：
+// login_mask 入口开关、fail_threshold/lock_minutes/unlock_mode 计数锁定、
+// captcha_after_fails 图形码、ip_rate_limit/ip_fail_limit 限流、access_token_ttl/
+// session_hard_ttl/session_max_concurrent 会话签发、pwd_* 密码时效。
 package auth
 
 import (
 	"context"
 	crand "crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,8 +20,10 @@ import (
 	appsrv "dugu-hr-saas-admin/application/sysuser"
 	"dugu-hr-saas-admin/application/types"
 	"dugu-hr-saas-admin/domain/authn"
+	"dugu-hr-saas-admin/domain/loginconfig"
 	"dugu-hr-saas-admin/domain/loginlog"
 	"dugu-hr-saas-admin/domain/sysuser"
+	dlog "dugu-hr-saas-admin/pkg/utils/log"
 )
 
 // ---------- 用例输入/输出对象 ----------
@@ -46,13 +55,24 @@ type LoginSmsReq struct {
 	Code   string `json:"code" binding:"required"`
 }
 
-// LoginResp 登录成功响应（token + 用户视图 + 改密提示）。
+// ChangePasswordReq 自助修改密码（登录配置 P1.5 改密链路；受 allow_self_change_pwd 门控）。
+type ChangePasswordReq struct {
+	OldPassword string `json:"old_password" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required"`
+}
+
+// LoginResp 登录成功响应（token + 用户视图 + 密码时效三态）。
 type LoginResp struct {
 	Token         string          `json:"token"`
 	ExpiresIn     int64           `json:"expires_in"`
 	User          appsrv.UserView `json:"user"`
-	PasswordStale bool            `json:"password_stale"`
+	PasswordStale bool            `json:"password_stale"`  // 兼容保留：密码已过有效期（按 pwd_max_age_days）
+	PwdExpiring   bool            `json:"pwd_expiring"`    // 有效期内、进入 pwd_remind_days 提前提醒窗口
+	PwdMustChange bool            `json:"pwd_must_change"` // 到期强制改密（pwd_expire_action=2）或首登强制改密标记
 }
+
+// ErrSelfPwdDisabled 管理员关闭了自助改密（allow_self_change_pwd=0，只能管理员重置）。
+var ErrSelfPwdDisabled = errors.New("auth: self password change disabled")
 
 // ---------- 用例 ----------
 
@@ -70,6 +90,8 @@ type Service struct {
 	mobile   sysuser.MobileCrypto
 	hasher   sysuser.PasswordHasher
 	ids      authn.IDGenerator
+	cfg      loginconfig.Provider // 登录策略快照（docs 登录配置设计 §4）
+	history  sysuser.PasswordHistory
 }
 
 // NewService 构造。
@@ -86,12 +108,20 @@ func NewService(
 	mobile sysuser.MobileCrypto,
 	hasher sysuser.PasswordHasher,
 	ids authn.IDGenerator,
+	cfg loginconfig.Provider,
+	history sysuser.PasswordHistory,
 ) *Service {
 	return &Service{
 		users: users, logs: logs, tokens: tokens, sessions: sessions,
 		captcha: captcha, guard: guard, lock: lock, codes: codes,
-		sms: sms, mobile: mobile, hasher: hasher, ids: ids,
+		sms: sms, mobile: mobile, hasher: hasher, ids: ids, cfg: cfg, history: history,
 	}
+}
+
+// policy 管线消费的策略快照（本管线只服务 sys_user → config_type=1；
+// DB/缓存全 miss 时 provider 兜底"最严默认值"，绝不因配置抖动拒登，§4）。
+func (s *Service) policy(ctx context.Context) (loginconfig.Snapshot, error) {
+	return s.cfg.Snapshot(ctx, loginconfig.TypeAdmin)
 }
 
 // GetCaptcha 获取图形验证码（一次性、5 分钟有效；签发有 IP 防刷配额）。
@@ -121,12 +151,30 @@ func (s *Service) LoginPassword(ctx context.Context, req *LoginPasswordReq, p ty
 		return nil, fmt.Errorf("%w: password", sysuser.ErrWeakPassword)
 	}
 
-	// IP 限流（20/min）与撞库兜底（50/h）
-	if err := s.guard.AllowLogin(ctx, p.IP); err != nil {
+	// 登录策略快照（一次入口读取，贯穿整条管线）
+	snap, err := s.policy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cfg := snap.Config
+
+	// 组件开关（docs 登录配置设计 §2.1：接口侧独立校验，前端隐藏只是体验）。
+	// 账号名不形似手机号（创建即禁歧义，sys_user §3.3③）→ 形状判定无歧义：
+	// 能归一化为手机号 = 手机+密码（bit1），否则账号+密码（bit0）。
+	bit := loginconfig.BitUsernamePassword
+	if _, mErr := sysuser.NormalizeMobile(ident); mErr == nil {
+		bit = loginconfig.BitMobilePassword
+	}
+	if !loginconfig.Has(cfg.LoginMask, bit) {
+		return nil, authn.ErrLoginMethodClosed
+	}
+
+	// IP 限流（ip_rate_limit 次/分钟）与撞库兜底（ip_fail_limit 次/小时）
+	if err := s.guard.AllowLogin(ctx, p.IP, cfg.IPRateLimit); err != nil {
 		s.recordLog(0, "", loginlog.Password, "", false, loginlog.ReasonRateLimited, p)
 		return nil, err
 	}
-	if err := s.guard.AllowIPFail(ctx, p.IP); err != nil {
+	if err := s.guard.AllowIPFail(ctx, p.IP, cfg.IPFailLimit); err != nil {
 		s.recordLog(0, "", loginlog.Password, "", false, loginlog.ReasonRateLimited, p)
 		return nil, err
 	}
@@ -138,14 +186,14 @@ func (s *Service) LoginPassword(ctx context.Context, req *LoginPasswordReq, p ty
 	}
 	idMask := sysuser.LogIdentifier(ident) // v1.2：账号原样、手机脱敏（docs §3.2）
 
-	// ② 图形码校验（连续失败 3 次后必带，docs §8.7）
-	if err := s.requireCaptcha(ctx, u, idMask, p, req.CaptchaID, req.CaptchaCode); err != nil {
+	// ② 图形码校验（连续失败 captcha_after_fails 次后必带；0=关闭，docs 登录配置 §2.2）
+	if err := s.requireCaptcha(ctx, snap, u, idMask, p, req.CaptchaID, req.CaptchaCode); err != nil {
 		return nil, err
 	}
 
 	// ③ 因子校验（密码）；不存在账号陪跑假 hash（docs §8.1）
 	if err := s.verifyPassword(ctx, u, req.Password); err != nil {
-		return nil, s.failAttempt(ctx, u, p, loginlog.Password, via, idMask, loginlog.ReasonBadCredential)
+		return nil, s.failAttempt(ctx, snap, u, p, loginlog.Password, via, idMask, loginlog.ReasonBadCredential)
 	}
 
 	// ④ 状态判定（在因子之后；停用不计失败次数，docs §6/§10）
@@ -155,11 +203,11 @@ func (s *Service) LoginPassword(ctx context.Context, req *LoginPasswordReq, p ty
 	}
 	if u.IsLocked(now) {
 		s.recordLog(u.ID, idMask, loginlog.Password, via, false, loginlog.ReasonLocked, p)
-		return nil, &authn.ErrLocked{Remaining: u.LockedRemaining(now)}
+		return nil, lockedErr(u.LockedRemaining(now))
 	}
 
 	// ⑤ 签发会话 + 日志 + 清计数
-	return s.success(ctx, u, loginlog.Password, via, idMask, p, now)
+	return s.success(ctx, snap, u, loginlog.Password, via, idMask, p, now)
 }
 
 // LoginSms 手机 + 短信码（入口三；验证码通过后汇入状态管线）。
@@ -168,7 +216,17 @@ func (s *Service) LoginSms(ctx context.Context, req *LoginSmsReq, p types.Reques
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", sysuser.ErrBadMobile, err)
 	}
-	if err := s.guard.AllowLogin(ctx, p.IP); err != nil {
+
+	// 组件开关：手机+短信（bit2）关闭 → 拒绝（docs 登录配置设计 §2.1）
+	snap, err := s.policy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !loginconfig.Has(snap.Config.LoginMask, loginconfig.BitMobileSms) {
+		return nil, authn.ErrLoginMethodClosed
+	}
+
+	if err := s.guard.AllowLogin(ctx, p.IP, snap.Config.IPRateLimit); err != nil {
 		s.recordLog(0, sysuser.MaskMobile(norm), loginlog.SMS, sysuser.ViaMobile, false, loginlog.ReasonRateLimited, p)
 		return nil, err
 	}
@@ -191,9 +249,9 @@ func (s *Service) LoginSms(ctx context.Context, req *LoginSmsReq, p types.Reques
 		// 汇入状态管线
 	case res == authn.CodeNoCode, res == authn.CodeExhausted:
 		// 一个口径：未注册/未发送/过期统一 SMS_EXPIRED，无存在性信号
-		return nil, s.smsFailure(ctx, u, norm, p, loginlog.ReasonSmsExpired)
+		return nil, s.smsFailure(ctx, snap, u, norm, p, loginlog.ReasonSmsExpired)
 	case res == authn.CodeMismatch:
-		return nil, s.smsFailure(ctx, u, norm, p, loginlog.ReasonSmsCodeError)
+		return nil, s.smsFailure(ctx, snap, u, norm, p, loginlog.ReasonSmsCodeError)
 	}
 
 	// 状态判定（同密码管线）
@@ -203,14 +261,23 @@ func (s *Service) LoginSms(ctx context.Context, req *LoginSmsReq, p types.Reques
 	}
 	if u.IsLocked(now) {
 		s.recordLog(u.ID, sysuser.MaskMobile(norm), loginlog.SMS, sysuser.ViaMobile, false, loginlog.ReasonLocked, p)
-		return nil, &authn.ErrLocked{Remaining: u.LockedRemaining(now)}
+		return nil, lockedErr(u.LockedRemaining(now))
 	}
 
-	return s.success(ctx, u, loginlog.SMS, sysuser.ViaMobile, sysuser.MaskMobile(norm), p, now)
+	return s.success(ctx, snap, u, loginlog.SMS, sysuser.ViaMobile, sysuser.MaskMobile(norm), p, now)
 }
 
 // SendSms 发送登录短信（docs §5 全部规则）。
 func (s *Service) SendSms(ctx context.Context, req *SendSmsReq, p types.RequestParams) error {
+	// 组件开关：短信登录关闭时连验证码都不发（入口校验防绕过，docs 登录配置设计 §2.1）
+	snap, err := s.policy(ctx)
+	if err != nil {
+		return err
+	}
+	if !loginconfig.Has(snap.Config.LoginMask, loginconfig.BitMobileSms) {
+		return authn.ErrLoginMethodClosed
+	}
+
 	// 前置图形码（短信轰炸是真实资损）；答案先过格式快筛再碰 Redis
 	if !plausibleCaptchaCode(req.CaptchaCode) {
 		return authn.ErrCaptchaFailed
@@ -260,17 +327,115 @@ func (s *Service) Logout(ctx context.Context, uid int64, jti string) error {
 	return s.sessions.Delete(ctx, uid, jti)
 }
 
-// Me 当前用户信息（视图复用账号域 DTO，避免同层重复定义）。
-func (s *Service) Me(ctx context.Context, uid int64, now time.Time) (*appsrv.UserView, bool, error) {
+// Me 当前用户信息（视图复用账号域 DTO）。
+// 返回密码时效三态（expired/expiring/mustChange，docs 登录配置设计 §2.4）。
+func (s *Service) Me(ctx context.Context, uid int64, now time.Time) (*appsrv.UserView, bool, bool, bool, error) {
+	snap, err := s.policy(ctx)
+	if err != nil {
+		return nil, false, false, false, err
+	}
 	u, err := s.users.ByID(ctx, uid)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, false, err
 	}
 	if u == nil {
-		return nil, false, authn.ErrBadCredential
+		return nil, false, false, false, authn.ErrBadCredential
 	}
 	v := appsrv.ToView(u)
-	return &v, u.PasswordStale(now), nil
+	expired, expiring := u.PwdAging(now, snap.Config.PwdMaxAgeDays, snap.Config.PwdRemindDays)
+	must := u.PwdForceChange || (expired && snap.Config.PwdExpireAction == loginconfig.PwdExpireForced)
+	return &v, expired, expiring, must, nil
+}
+
+// ChangePassword 自助修改密码（登录配置 P1.5 改密链路）：
+// allow_self_change_pwd 门控 → 旧密码因子校验（错误计入锁定阈值）→ 新密码按
+// 登录配置策略校验 → 历史密码（pwd_history_count）比对 → 更新凭证 + 清首登
+// 强制标记 → kick_on_pwd_change 决定是否全端秒踢。
+func (s *Service) ChangePassword(ctx context.Context, uid int64, req *ChangePasswordReq, p types.RequestParams, now time.Time) error {
+	snap, err := s.policy(ctx)
+	if err != nil {
+		return err
+	}
+	cfg := snap.Config
+	if !cfg.AllowSelfChangePwd {
+		return ErrSelfPwdDisabled
+	}
+	u, err := s.users.ByID(ctx, uid)
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return authn.ErrBadCredential
+	}
+	if u.IsLocked(now) {
+		return lockedErr(u.LockedRemaining(now))
+	}
+
+	// 旧密码因子校验：错误计数（与登录同阈值防撞库），但不写登录日志（非登录行为）
+	ok, _, verr := u.Credential.Verify(s.hasher, req.OldPassword)
+	if verr != nil {
+		return verr
+	}
+	if !ok {
+		if err := s.countChangeFail(ctx, snap, u, p); err != nil {
+			return err
+		}
+		return authn.ErrBadCredential
+	}
+
+	// 新密码策略（登录配置明细字段——唯一真相，§2.4）
+	if err := sysuser.ValidatePasswordPolicy(req.NewPassword, u.Username, sysuser.PwdPolicy{
+		MinLength: cfg.PwdMinLength, MinClasses: cfg.PwdMinClasses, ForbidUsername: cfg.PwdForbidUsername,
+	}); err != nil {
+		return err
+	}
+
+	// 历史密码：先写旧 hash（旧密码本身属于"最近 N 次"），再逐条 bcrypt 比对
+	if cfg.PwdHistoryCount > 0 {
+		if aErr := s.history.Append(ctx, sysuser.UserTypeEnumSysUser, u.ID, u.Credential.Hash); aErr != nil {
+			return aErr
+		}
+		recent, hErr := s.history.RecentHashes(ctx, sysuser.UserTypeEnumSysUser, u.ID, cfg.PwdHistoryCount)
+		if hErr != nil {
+			return hErr
+		}
+		for _, h := range recent {
+			if match, _, cErr := s.hasher.Verify(sysuser.Credential{Hash: h, Algo: "bcrypt"}, req.NewPassword); cErr == nil && match {
+				return sysuser.ErrWeakPassword // 不得与最近 N 次重复（§2.4）
+			}
+		}
+	}
+
+	c, err := sysuser.HashPassword(s.hasher, req.NewPassword)
+	if err != nil {
+		return err
+	}
+	c.PwdUpdatedAt = &now
+	if err := s.users.UpdatePassword(ctx, u.ID, c); err != nil {
+		return err
+	}
+	if err := s.users.SetPwdForceChange(ctx, u.ID, false); err != nil { // 改密成功清首登强制标记
+		slog.Warn("清除首登强制改密标记失败", "user_id", u.ID, "err", err)
+	}
+	if cfg.KickOnPwdChange { // 修改密码踢下线（§2.3；全端秒踢含当前端，与 sys_user §7 一致）
+		if kErr := s.sessions.KickAll(ctx, u.ID); kErr != nil {
+			slog.Warn("改密踢会话失败", "user_id", u.ID, "err", kErr)
+		}
+	}
+	if rErr := s.lock.ResetFail(ctx, u.ID, sysuser.LogIdentifier(u.Username), p.IP); rErr != nil {
+		slog.Warn("清除失败计数失败", "user_id", u.ID, "err", rErr)
+	}
+	s.audit("auth.change_password", u.ID, p, map[string]interface{}{"target_id": u.ID})
+	return nil
+}
+
+// audit 认证敏感操作审计（与 sysuser/dict 同款结构化打点）。
+func (s *Service) audit(action string, opUID int64, p types.RequestParams, detail map[string]interface{}) {
+	props := map[string]interface{}{"operator_id": opUID, "operator_ip": p.IP}
+	for k, v := range detail {
+		props[k] = v
+	}
+	dlog.Audit(action, props)
 }
 
 // ---------- 管线内部 ----------
@@ -287,17 +452,21 @@ func (s *Service) resolve(ctx context.Context, ident string) (*sysuser.User, sys
 	return r.User, r.Via, nil
 }
 
-// requireCaptcha 图形码守卫：连续失败 ≥ StreakThreshold 后必带（docs §8.7）。
-func (s *Service) requireCaptcha(ctx context.Context, u *sysuser.User, idMask string, p types.RequestParams, captID, captCode string) error {
+// requireCaptcha 图形码守卫：连续失败 ≥ captcha_after_fails 后必带（0=关闭）。
+func (s *Service) requireCaptcha(ctx context.Context, snap loginconfig.Snapshot, u *sysuser.User, idMask string, p types.RequestParams, captID, captCode string) error {
 	if u == nil {
 		return nil // 不存在账号交给统一 BAD_CREDENTIAL 口径
+	}
+	threshold := snap.Config.CaptchaAfterFails
+	if threshold <= 0 {
+		return nil // 0=关闭（docs 登录配置设计 §2.2）
 	}
 	streak, err := s.lock.GetStreak(ctx, u.ID)
 	if err != nil {
 		slog.Warn("读取连续失败步数失败（保守放行，DB 锁定仍兜底）", "user_id", u.ID, "err", err)
 		return nil
 	}
-	if streak < sysuser.StreakThreshold {
+	if streak < threshold {
 		return nil
 	}
 	if captID == "" || captCode == "" {
@@ -311,7 +480,7 @@ func (s *Service) requireCaptcha(ctx context.Context, u *sysuser.User, idMask st
 		return err
 	}
 	if !ok {
-		_ = s.failAttempt(ctx, u, p, loginlog.Password, "", idMask, loginlog.ReasonCaptchaFailed)
+		_ = s.failAttempt(ctx, snap, u, p, loginlog.Password, "", idMask, loginlog.ReasonCaptchaFailed)
 		return authn.ErrCaptchaFailed
 	}
 	return nil
@@ -345,16 +514,17 @@ func (s *Service) verifyPassword(ctx context.Context, u *sysuser.User, pwd strin
 
 // failAttempt 失败计数 + 锁定 + 日志（docs §6：user_id 主维度 + IP 兜底；
 // 不存在账号按“标识+IP”兜底计数，docs §10）。
-func (s *Service) failAttempt(ctx context.Context, u *sysuser.User, p types.RequestParams, t loginlog.Type, via sysuser.Via, idMask string, reason loginlog.FailReason) error {
+// 阈值/时长/解锁方式全部来自登录配置快照（§7 生效点；已冻结账号不追溯）。
+func (s *Service) failAttempt(ctx context.Context, snap loginconfig.Snapshot, u *sysuser.User, p types.RequestParams, t loginlog.Type, via sysuser.Via, idMask string, reason loginlog.FailReason) error {
 	if u == nil {
-		_, _ = s.lock.IncrStreakByKey(ctx, idMask, p.IP)
+		_, _ = s.lock.IncrStreakByKey(ctx, idMask, p.IP, lockWindow(snap))
 	} else {
-		n, rerr := s.lock.IncrFail(ctx, u.ID)
+		n, rerr := s.lock.IncrFail(ctx, u.ID, lockWindow(snap))
 		if rerr != nil {
 			slog.Warn("Redis 失败计数失败（DB 兜底仍执行）", "user_id", u.ID, "err", rerr)
 			n = 0
 		}
-		if _, serr := s.lock.IncrStreak(ctx, u.ID); serr != nil {
+		if _, serr := s.lock.IncrStreak(ctx, u.ID, lockWindow(snap)); serr != nil {
 			slog.Warn("连续失败步数写入失败", "user_id", u.ID, "err", serr)
 		}
 
@@ -364,11 +534,16 @@ func (s *Service) failAttempt(ctx context.Context, u *sysuser.User, p types.Requ
 			slog.Warn("DB 失败计数失败", "user_id", u.ID, "err", derr)
 			personal, cnt = n, 0
 		}
-		if personal >= sysuser.FailThreshold {
-			if lerr := s.users.MarkLocked(ctx, u.ID, time.Now().Add(sysuser.LockDuration)); lerr != nil {
+		if personal >= snap.Config.FailThreshold {
+			until := time.Now().Add(lockWindow(snap))
+			if snap.Config.UnlockMode == loginconfig.UnlockAdmin {
+				// 仅管理员解锁：不自动到期（哨兵锁，管理员解锁/改配置后按新策略走）
+				until = time.Now().Add(manualLockSentinel)
+			}
+			if lerr := s.users.MarkLocked(ctx, u.ID, until); lerr != nil {
 				slog.Warn("DB 写锁定失败", "user_id", u.ID, "err", lerr)
 			}
-			if merr := s.lock.MarkLocked(ctx, u.ID, sysuser.LockDuration); merr != nil {
+			if merr := s.lock.MarkLocked(ctx, u.ID, time.Until(until)); merr != nil {
 				slog.Warn("Redis 写锁定标记失败（DB locked_until 已生效）", "user_id", u.ID, "err", merr)
 			}
 		}
@@ -383,7 +558,7 @@ func (s *Service) failAttempt(ctx context.Context, u *sysuser.User, p types.Requ
 }
 
 // smsFailure 短信登录失败路径（统一口径；账号存在时计数）。
-func (s *Service) smsFailure(ctx context.Context, u *sysuser.User, norm string, p types.RequestParams, reason loginlog.FailReason) error {
+func (s *Service) smsFailure(ctx context.Context, snap loginconfig.Snapshot, u *sysuser.User, norm string, p types.RequestParams, reason loginlog.FailReason) error {
 	if u == nil {
 		// 未注册手机号：无 user 可计数，只记日志（user_id=0），口径与注册号一致
 		s.recordLog(0, sysuser.MaskMobile(norm), loginlog.SMS, sysuser.ViaMobile, false, reason, p)
@@ -392,17 +567,27 @@ func (s *Service) smsFailure(ctx context.Context, u *sysuser.User, norm string, 
 		}
 		return authn.ErrSmsCodeError
 	}
-	return s.failAttempt(ctx, u, p, loginlog.SMS, sysuser.ViaMobile, sysuser.MaskMobile(norm), reason)
+	return s.failAttempt(ctx, snap, u, p, loginlog.SMS, sysuser.ViaMobile, sysuser.MaskMobile(norm), reason)
 }
 
 // success 成功路径：签发会话 + 清计数 + 成功日志 + 更新最近登录。
-func (s *Service) success(ctx context.Context, u *sysuser.User, t loginlog.Type, via sysuser.Via, idMask string, p types.RequestParams, now time.Time) (*LoginResp, error) {
-	tok, err := s.tokens.Issue(ctx, u.ID)
+// TTL/硬上限/并发上限/密码时效全部来自登录配置（§7：TTL 仅新签发会话生效）。
+func (s *Service) success(ctx context.Context, snap loginconfig.Snapshot, u *sysuser.User, t loginlog.Type, via sysuser.Via, idMask string, p types.RequestParams, now time.Time) (*LoginResp, error) {
+	cfg := snap.Config
+	accessTTL := time.Duration(cfg.AccessTokenTTL) * time.Second
+	hardTTL := time.Duration(cfg.SessionHardTTL) * time.Second
+
+	tok, err := s.tokens.Issue(ctx, u.ID, accessTTL)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.sessions.Create(ctx, u.ID, tok.JTI); err != nil {
+	if err := s.sessions.Create(ctx, u.ID, tok.JTI, accessTTL, hardTTL); err != nil {
 		return nil, err
+	}
+	if cfg.SessionMaxConcurrent > 0 { // 并发会话上限：挤掉最早会话（§2.3）
+		if pErr := s.sessions.PruneMax(ctx, u.ID, cfg.SessionMaxConcurrent); pErr != nil {
+			slog.Warn("并发会话挤压失败", "user_id", u.ID, "err", pErr)
+		}
 	}
 
 	if err := s.users.SaveLoginSuccess(ctx, u.ID, p.IP, now); err != nil {
@@ -414,12 +599,73 @@ func (s *Service) success(ctx context.Context, u *sysuser.User, t loginlog.Type,
 
 	s.recordLog(u.ID, idMask, t, via, true, "", p)
 
+	expired, expiring := u.PwdAging(now, cfg.PwdMaxAgeDays, cfg.PwdRemindDays)
+	must := u.PwdForceChange || (expired && cfg.PwdExpireAction == loginconfig.PwdExpireForced)
 	return &LoginResp{
 		Token:         tok.Value,
 		ExpiresIn:     int64(tok.TTL / time.Second),
 		User:          appsrv.ToView(u),
-		PasswordStale: u.PasswordStale(now),
+		PasswordStale: expired,
+		PwdExpiring:   expiring,
+		PwdMustChange: must,
 	}, nil
+}
+
+// countChangeFail 自助改密旧密码错误计数（与登录同阈值/时长，防撞库；无登录日志）。
+func (s *Service) countChangeFail(ctx context.Context, snap loginconfig.Snapshot, u *sysuser.User, p types.RequestParams) error {
+	window := lockWindow(snap)
+	n, rerr := s.lock.IncrFail(ctx, u.ID, window)
+	if rerr != nil {
+		slog.Warn("Redis 失败计数失败（DB 兜底仍执行）", "user_id", u.ID, "err", rerr)
+		n = 0
+	}
+	cnt, derr := s.users.IncrFailures(ctx, u.ID, time.Now())
+	personal := cnt
+	if derr != nil {
+		slog.Warn("DB 失败计数失败", "user_id", u.ID, "err", derr)
+		personal, cnt = n, 0
+	}
+	if personal >= snap.Config.FailThreshold {
+		until := time.Now().Add(window)
+		if snap.Config.UnlockMode == loginconfig.UnlockAdmin {
+			until = time.Now().Add(manualLockSentinel)
+		}
+		if lerr := s.users.MarkLocked(ctx, u.ID, until); lerr != nil {
+			slog.Warn("DB 写锁定失败", "user_id", u.ID, "err", lerr)
+		}
+		if merr := s.lock.MarkLocked(ctx, u.ID, time.Until(until)); merr != nil {
+			slog.Warn("Redis 写锁定标记失败", "user_id", u.ID, "err", merr)
+		}
+	}
+	if rerr := s.guard.RecordIPFail(ctx, p.IP); rerr != nil {
+		slog.Warn("IP 撞库计数失败", "ip", p.IP, "err", rerr)
+	}
+	return authn.ErrBadCredential
+}
+
+// lockWindow 计数/锁定窗口（= lock_minutes，docs 登录配置设计 §2.2）。
+func lockWindow(snap loginconfig.Snapshot) time.Duration {
+	if snap.Config.LockMinutes <= 0 { // 兜底（配置异常时取旧默认 15 分钟）
+		return sysuser.LockDuration
+	}
+	return time.Duration(snap.Config.LockMinutes) * time.Minute
+}
+
+// manualLockSentinel "仅管理员解锁"（unlock_mode=2）的哨兵锁时长：
+// locked_until 落库为远期时间，login 响应按"联系管理员解锁"语义返回（见 lockedErr）。
+const manualLockSentinel = 100 * 365 * 24 * time.Hour
+
+// manualUnlockThreshold 剩余时长超过它即按"仅管理员解锁"展示。
+// 自动锁定上限 1440 分钟=24h、人工冻结上限 10080 分钟=7 天，均远小于 30 天哨兵。
+const manualUnlockThreshold = 30 * 24 * time.Hour
+
+// lockedErr 锁定错误：Remaining<0 = 仅管理员解锁语义（api 层回 unlock_by_admin，
+// 不给倒计时——倒计时无意义）。
+func lockedErr(remaining time.Duration) error {
+	if remaining > manualUnlockThreshold {
+		return &authn.ErrLocked{Remaining: -1}
+	}
+	return &authn.ErrLocked{Remaining: remaining}
 }
 
 // recordLog 登录日志：**写事务外**（独立 goroutine + 独立 ctx），

@@ -30,6 +30,8 @@ var columnSpecs = []struct {
 	// v0.5：id_path——父链 ID 串（根=自身；子="父id/.../自身"），供前端展开折叠/子树过滤。
 	// 深度≤20 等深树撑爆风险：VARCHAR(2048) 余量；由应用层在 Create/Move 维护，迁移只补列。
 	{table: "sys_menu", column: "id_path", def: "VARCHAR(2048) NOT NULL DEFAULT ''"},
+	// 登录配置 P1.5：首登强制改密标记列（docs 登录配置设计 §2.4；存量账号缺省 0=不强制）。
+	{table: "sys_user", column: "pwd_force_change", def: "TINYINT(1) NOT NULL DEFAULT 0"},
 }
 
 // ensureColumns 幂等补列。

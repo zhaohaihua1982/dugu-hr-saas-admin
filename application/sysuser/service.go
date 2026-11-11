@@ -12,6 +12,7 @@ import (
 
 	"dugu-hr-saas-admin/application/types"
 	authn "dugu-hr-saas-admin/domain/authn"
+	"dugu-hr-saas-admin/domain/loginconfig"
 	"dugu-hr-saas-admin/domain/sysuser"
 	"dugu-hr-saas-admin/pkg/code"
 	dlog "dugu-hr-saas-admin/pkg/utils/log"
@@ -149,6 +150,8 @@ type Service struct {
 	mobile   sysuser.MobileCrypto
 	hasher   sysuser.PasswordHasher
 	ids      authn.IDGenerator
+	cfg      loginconfig.Provider // 登录配置（pwd_* 策略 / kick_on_pwd_change / pwd_force_first_change）
+	history  sysuser.PasswordHistory
 }
 
 // NewService 构造（认证域 DTOstatus 与本域无耦合，登录会话仅通过 SessionStore 端口协作）。
@@ -159,8 +162,20 @@ func NewService(
 	mobile sysuser.MobileCrypto,
 	hasher sysuser.PasswordHasher,
 	ids authn.IDGenerator,
+	cfg loginconfig.Provider,
+	history sysuser.PasswordHistory,
 ) *Service {
-	return &Service{users: users, sessions: sessions, lock: lock, mobile: mobile, hasher: hasher, ids: ids}
+	return &Service{users: users, sessions: sessions, lock: lock, mobile: mobile,
+		hasher: hasher, ids: ids, cfg: cfg, history: history}
+}
+
+// policy 管理后台登录配置快照（pwd_* 生效点；读不到 provider 兜底，§3.3）。
+func (s *Service) policy(ctx context.Context) (*loginconfig.Config, error) {
+	snap, err := s.cfg.Snapshot(ctx, loginconfig.TypeAdmin)
+	if err != nil {
+		return nil, err
+	}
+	return snap.Config, nil
 }
 
 // List 账号列表（手机只回 mask，永不解密）。
@@ -181,11 +196,19 @@ func (s *Service) List(ctx context.Context, req *SysUserListReq, opUID int64) (*
 }
 
 // Create 创建账号（docs §3.3：username 禁 11 位纯数字；uk_mobile 一人一手机）。
+// 密码按登录配置策略校验（pwd_*，§2.4 只对新写入生效）；pwd_force_first_change=1
+// 时置位首登强制改密标记（管理员代建账号后置位，登录后先改密）。
 func (s *Service) Create(ctx context.Context, req *CreateSysUserReq, opUID int64, p types.RequestParams) (*UserView, error) {
 	if !validUsername(req.Username) {
 		return nil, sysuser.ErrBadUsername
 	}
-	if err := sysuser.ValidatePassword(req.Password); err != nil {
+	cfg, err := s.policy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := sysuser.ValidatePasswordPolicy(req.Password, req.Username, sysuser.PwdPolicy{
+		MinLength: cfg.PwdMinLength, MinClasses: cfg.PwdMinClasses, ForbidUsername: cfg.PwdForbidUsername,
+	}); err != nil {
 		return nil, err
 	}
 	m, err := sysuser.BindMobile(req.Mobile, s.mobile)
@@ -206,6 +229,8 @@ func (s *Service) Create(ctx context.Context, req *CreateSysUserReq, opUID int64
 		Status:     sysuser.StatusActive,
 		Credential: c,
 		Mobile:     m,
+		// 管理员代建账号后置位首登强制改密（登录配置 §2.4，配置开关=1 才置位）
+		PwdForceChange: cfg.PwdForceFirstChange,
 	}
 	// 并发撞唯一键：仓储内转换为 ErrUsernameTaken/ErrMobileTaken（docs §3.1）
 	if err := s.users.Create(ctx, u); err != nil {
@@ -410,9 +435,17 @@ func (b *BatchResp) tally() {
 	}
 }
 
-// ResetPassword 重置密码（docs §9：强审计）。改密即踢全部会话（docs §7/§10）。
+// ResetPassword 重置密码（docs §9：强审计）。
+// 密码按登录配置策略校验；旧 hash 写入历史密码表（pwd_history_count 校验的比对源）；
+// pwd_force_first_change=1 时置位首登强制改密标记；kick_on_pwd_change 决定是否全端秒踢。
 func (s *Service) ResetPassword(ctx context.Context, targetID int64, req *ResetPasswordReq, opUID int64, p types.RequestParams, now time.Time) error {
-	if err := sysuser.ValidatePassword(req.Password); err != nil {
+	cfg, err := s.policy(ctx)
+	if err != nil {
+		return err
+	}
+	if err := sysuser.ValidatePasswordPolicy(req.Password, "", sysuser.PwdPolicy{
+		MinLength: cfg.PwdMinLength, MinClasses: cfg.PwdMinClasses, ForbidUsername: cfg.PwdForbidUsername,
+	}); err != nil {
 		return err
 	}
 	u, err := s.load(ctx, targetID)
@@ -424,6 +457,13 @@ func (s *Service) ResetPassword(ctx context.Context, targetID int64, req *ResetP
 		return err
 	}
 
+	// 历史：先写旧 hash 再改凭证（写历史失败即中止——绝不静默跳过复用校验的比对源）
+	if cfg.PwdHistoryCount > 0 && u.Credential.HasPassword() {
+		if aErr := s.history.Append(ctx, sysuser.UserTypeEnumSysUser, u.ID, u.Credential.Hash); aErr != nil {
+			return aErr
+		}
+	}
+
 	c, err := s.hasher.Hash(req.Password)
 	if err != nil {
 		return err
@@ -432,11 +472,18 @@ func (s *Service) ResetPassword(ctx context.Context, targetID int64, req *ResetP
 	if err := s.users.UpdatePassword(ctx, u.ID, c); err != nil {
 		return err
 	}
-	if err := s.sessions.KickAll(ctx, u.ID); err != nil {
-		slog.Warn("重置密码踢会话失败", "user_id", u.ID, "err", err)
+	if cfg.PwdForceFirstChange { // 重置后置位首登强制改密（登录后跳改密页，§2.4）
+		if sErr := s.users.SetPwdForceChange(ctx, u.ID, true); sErr != nil {
+			slog.Warn("置位首登强制改密标记失败", "user_id", u.ID, "err", sErr)
+		}
+	}
+	if cfg.KickOnPwdChange {
+		if err := s.sessions.KickAll(ctx, u.ID); err != nil {
+			slog.Warn("重置密码踢会话失败", "user_id", u.ID, "err", err)
+		}
 	}
 	s.audit("sysuser.reset_password", opUID, p, map[string]interface{}{
-		"target_id": u.ID, "target_username": u.Username,
+		"target_id": u.ID, "target_username": u.Username, "kick_sessions": cfg.KickOnPwdChange,
 	})
 	return nil
 }
